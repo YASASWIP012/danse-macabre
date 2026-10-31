@@ -6,7 +6,7 @@ import { ANTE, EXPLORER, SEATS } from "./net";
 import { claim, connectWallet, stake } from "./stake";
 
 const $ = (id: string) => document.getElementById(id)!;
-const NAMES = ["The Widow", "The Sexton", "The Miller", "The Bellringer", "The Gravedigger"];
+const NAMES = ["The Widow", "The Sexton", "The Miller", "The Bell", "The Digger"];
 
 let me = 0; // this player's seat
 let ghosts: Seat[] = []; // seats this tab plays for
@@ -408,6 +408,18 @@ async function guarded(run: () => Promise<void>) {
   for (const id of ["play", "friends"]) ($(id) as HTMLButtonElement).disabled = false;
 }
 
+/** A refresh shouldn't drop a player back into an old table unasked, so this asks. */
+function offerResume(saved: Saved) {
+  say(`You have a seat at table ${saved.table}.`);
+  const back = document.createElement("button");
+  back.textContent = "Go back to it";
+  back.onclick = () => {
+    $("choices").replaceChildren();
+    void guarded(() => resume(saved));
+  };
+  $("choices").replaceChildren(back);
+}
+
 async function start() {
   await init();
   drawSeats();
@@ -432,8 +444,8 @@ async function start() {
   const saved = restore();
   if (saved && !invite.get("t")) {
     const old = await readTable(BigInt(saved.table)).catch(() => null);
-    const unpaid = old && saved.payout && (old.phase !== PHASE.OVER || !(old.collected & (1 << saved.me)));
-    if (old && (old.phase !== PHASE.OVER || unpaid)) await guarded(() => resume(saved));
+    const unpaid = old && saved.payout && !(old.collected & (1 << saved.me));
+    if (old && (old.phase !== PHASE.OVER || unpaid)) offerResume(saved);
   }
   fetch("/proof.json")
     .then((r) => (r.ok ? r.json() : []))
