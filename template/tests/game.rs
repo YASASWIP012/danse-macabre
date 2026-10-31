@@ -20,6 +20,7 @@ struct World {
     key: RistrettoSecretKey,
     table: u64,
     seats: Vec<Seat>,
+    ticket: Seat,
     nonce: u32,
 }
 
@@ -56,10 +57,10 @@ fn world() -> World {
     let game = result.finalize.result.accept().unwrap().up_iter()
         .find_map(|(id, _)| id.as_component_address().filter(|a| *a != account))
         .expect("component created");
-    let ticket = Native::mul_base(&random_scalar());
-    let table: u64 = test.call_method(game, "open_table", args![b(ticket.to_vec()), 0u64], vec![]);
+    let opening = Seat::new(1, 0);
+    let table: u64 = test.call_method(game, "open_table", args![b(opening.key.to_vec()), 0u64], vec![]);
     let seats = (0..N as u32).map(|i| Seat::new(table, i)).collect();
-    World { test, game, account, key, table, seats, nonce: 0 }
+    World { test, game, account, key, table, seats, ticket: opening, nonce: 0 }
 }
 
 impl World {
@@ -86,7 +87,8 @@ impl World {
     fn join_all(&mut self) {
         for s in self.seats.clone() {
             let t = self.table;
-            self.ok("join", args![t, s.index as u8, b(s.key.to_vec()), b(s.join_proof())]);
+            let invite = self.ticket.invite_proof(s.index, &s.key);
+            self.ok("join", args![t, s.index as u8, b(s.key.to_vec()), b(s.join_proof()), b(invite)]);
         }
     }
     fn shuffle_all(&mut self) {
@@ -94,7 +96,9 @@ impl World {
         for s in self.seats.clone() {
             let t = self.table;
             let deck = ciphers(&self.state().deck);
-            self.ok("shuffle", args![t, s.index as u8, b(encode_steps(&s.shuffle(&deck, &joint)))]);
+            let steps = encode_steps(&s.shuffle(&deck, &joint));
+            let by = s.shuffle_proof(&steps);
+            self.ok("shuffle", args![t, s.index as u8, b(steps), b(by)]);
         }
     }
     fn deal_all(&mut self) {
@@ -213,7 +217,8 @@ fn a_rogue_key_without_proof_of_possession_is_refused() {
     let t = w.table;
     let s = w.seats[0].clone();
     let other = w.seats[1].join_proof();
-    w.refused("join", args![t, 0u8, b(s.key.to_vec()), b(other)], "Bad key proof");
+    let invite = w.ticket.invite_proof(0, &s.key);
+    w.refused("join", args![t, 0u8, b(s.key.to_vec()), b(other), b(invite)], "Bad key proof");
 }
 
 #[test]
@@ -225,7 +230,9 @@ fn shuffling_out_of_turn_is_refused() {
     let deck = ciphers(&w.state().deck);
     let s = w.seats[1].clone();
     let t = w.table;
-    w.refused("shuffle", args![t, 1u8, b(encode_steps(&s.shuffle(&deck, &joint)))], "Not your shuffle");
+    let steps = encode_steps(&s.shuffle(&deck, &joint));
+    let by = s.shuffle_proof(&steps);
+    w.refused("shuffle", args![t, 1u8, b(steps), b(by)], "Not your shuffle");
 }
 
 #[test]
@@ -238,7 +245,9 @@ fn a_shuffle_that_adds_a_second_wolf_is_refused() {
     let mut steps = s.shuffle(&deck, &joint);
     steps[3].out_b.c2 = Native::add(&steps[3].out_b.c2, &shroud::GENERATOR);
     let t = w.table;
-    w.refused("shuffle", args![t, 0u8, b(encode_steps(&steps))], "Bad shuffle proof");
+    let steps = encode_steps(&steps);
+    let by = s.shuffle_proof(&steps);
+    w.refused("shuffle", args![t, 0u8, b(steps), b(by)], "Bad shuffle proof");
 }
 
 #[test]
@@ -283,7 +292,7 @@ fn a_villager_cannot_post_a_kill() {
     let targets: Vec<usize> = (0..N).filter(|i| *i != s.index as usize).collect();
     let statement = st::night_statement::<Native>(&joint, &s.key, &residual, &votes, &targets);
     let ctx = st::ctx(b"night", s.game, 1, s.index, &[]);
-    let forged = shroud::sigma::prove::<Native>(&ctx, &statement, 0, &(0..N).map(|_| random_scalar()).collect::<Vec<_>>(), &mut random_scalar);
+    let forged = shroud::sigma::prove::<Native>(&ctx, &statement, 0, &(0..=N).map(|_| random_scalar()).collect::<Vec<_>>(), &mut random_scalar);
     let t = w.table;
     w.refused("night", args![t, s.index as u8, b(encode_ciphers(&votes)), b(forged)], "Bad night proof");
 }
@@ -345,16 +354,13 @@ fn a_tied_day_kills_nobody() {
 /// A throwaway key with no account plays a move, and only the fee pot pays.
 fn sealed_by_stranger(w: &mut World, seat: usize, method: &str, a: Vec<tari_template_test_tooling::transaction::builder::named_args::NamedArg>) -> Transaction {
     let t = w.table;
-    let s = w.seats[seat].clone();
     let nonce = w.nonce;
     w.nonce += 1;
-    let proof = s.fee_proof(nonce);
-    let (stranger, _) = w.test.new_key_pair(200 + nonce as u8);
+    let (stranger, public) = sealer(w, 200 + nonce as u8);
+    let proof = w.seats[seat].fee_proof(nonce, &public);
     w.test
         .transaction()
-        .with_fee_instructions_builder(|b| {
-            b.call_method(w.game, "pay_seat_fee", args![t, seat as u8, b_(proof), 3_000_000u64])
-        })
+        .with_fee_instructions_builder(|f| f.call_method(w.game, "pay_seat_fee", args![t, seat as u8, b_(proof), 3_000_000u64]))
         .call_method(w.game, method, a)
         .finish()
         .seal(&stranger)
@@ -382,7 +388,8 @@ fn a_stranger_key_plays_a_move_and_only_the_pot_pays() {
     let s = w.seats[0].clone();
     let t = w.table;
     let steps = encode_steps(&s.shuffle(&deck, &joint));
-    let tx = sealed_by_stranger(&mut w, 0, "shuffle", args![t, 0u8, b(steps)]);
+    let by = s.shuffle_proof(&steps);
+    let tx = sealed_by_stranger(&mut w, 0, "shuffle", args![t, 0u8, b(steps), b(by)]);
     let result = priced(&mut w, tx);
     let fee = result.finalize.fee_receipt.total_fees_paid();
     println!("one shuffle: fee {fee}");
@@ -400,28 +407,30 @@ fn every_seat_in_one_transaction_stays_inside_the_budget() {
     let s = w.seats[0].clone();
     let t = w.table;
     let steps = encode_steps(&s.shuffle(&deck, &joint));
-    let tx = sealed_by_stranger(&mut w, 0, "shuffle", args![t, 0u8, b(steps)]);
+    let by = s.shuffle_proof(&steps);
+    let tx = sealed_by_stranger(&mut w, 0, "shuffle", args![t, 0u8, b(steps), b(by)]);
     priced(&mut w, tx);
     for seat in 1..N {
         let joint = w.joint();
         let deck = ciphers(&w.state().deck);
         let s = w.seats[seat].clone();
         let steps = encode_steps(&s.shuffle(&deck, &joint));
-        let tx = sealed_by_stranger(&mut w, 0, "shuffle", args![t, seat as u8, b(steps)]);
+        let by = s.shuffle_proof(&steps);
+        let tx = sealed_by_stranger(&mut w, 0, "shuffle", args![t, seat as u8, b(steps), b(by)]);
         priced(&mut w, tx);
     }
     let state = w.state();
     assert_eq!(state.phase, DEAL);
     let deck = ciphers(&state.deck);
     let mut builder = w.test.transaction();
-    let proof = w.seats[0].fee_proof(w.nonce);
+    let (stranger, public) = sealer(&mut w, 250);
+    let proof = w.seats[0].fee_proof(w.nonce, &public);
     builder = builder.with_fee_instructions_builder(|f| f.call_method(w.game, "pay_seat_fee", args![t, 0u8, b_(proof), 3_000_000u64]));
     for s in w.seats.clone() {
         let bases: Vec<Pt> = (0..N).filter(|i| *i != s.index as usize).map(|i| deck[i].c1).collect();
         let (shares, proof) = s.shares(b"deal", 0, &bases);
         builder = builder.call_method(w.game, "deal", args![t, s.index as u8, b(shares.concat()), b(proof)]);
     }
-    let (stranger, _) = w.test.new_key_pair(250);
     let tx = builder.finish().seal(&stranger);
     let result = priced(&mut w, tx);
     println!("deal for five seats: fee {}", result.finalize.fee_receipt.total_fees_paid());
@@ -431,14 +440,14 @@ fn every_seat_in_one_transaction_stays_inside_the_budget() {
     let state = w.state();
     let joint = w.joint();
     let residual = ciphers(&state.residual);
-    let proof = w.seats[0].fee_proof(w.nonce);
+    let (stranger, public) = sealer(&mut w, 251);
+    let proof = w.seats[0].fee_proof(w.nonce, &public);
     let mut builder = w.test.transaction().with_fee_instructions_builder(|f| f.call_method(w.game, "pay_seat_fee", args![t, 0u8, b_(proof), 3_000_000u64]));
     for s in w.seats.clone() {
         let targets: Vec<usize> = (0..N).filter(|i| *i != s.index as usize).collect();
         let (votes, proof) = s.night(1, &joint, &residual[s.index as usize], &targets, N, Some(targets[0]));
         builder = builder.call_method(w.game, "night", args![t, s.index as u8, b(encode_ciphers(&votes)), b(proof)]);
     }
-    let (stranger, _) = w.test.new_key_pair(251);
     let tx = builder.finish().seal(&stranger);
     let result = priced(&mut w, tx);
     println!("night for five seats: fee {}", result.finalize.fee_receipt.total_fees_paid());
@@ -450,8 +459,8 @@ fn a_stale_fee_proof_is_refused() {
     let mut w = world();
     w.join_all();
     let t = w.table;
-    let proof = w.seats[0].fee_proof(99);
-    let (stranger, _) = w.test.new_key_pair(252);
+    let (stranger, public) = sealer(&mut w, 252);
+    let proof = w.seats[0].fee_proof(99, &public);
     let tx = w
         .test
         .transaction()
@@ -462,17 +471,21 @@ fn a_stale_fee_proof_is_refused() {
     assert!(w.test.try_execute(tx, vec![]).map(|r| r.finalize.result.any_accept().is_none()).unwrap_or(true));
 }
 
-fn stake(w: &mut World, seat: usize, amount: u64) {
+/// Stakes on a seat and returns the payout key.
+fn stake(w: &mut World, seat: usize) -> Seat {
     let t = w.table;
+    let payout = Seat::new(t, seat as u32);
+    let proof = w.seats[seat].ante_proof(&payout.key);
     let tx = w
         .test
         .transaction()
-        .call_method(w.account, "withdraw", args![tari_template_lib::prelude::TARI_TOKEN, Amount::from(amount)])
+        .call_method(w.account, "withdraw", args![tari_template_lib::prelude::TARI_TOKEN, Amount::from(danse_macabre::ANTE)])
         .put_last_instruction_output_on_workspace("stake")
-        .call_method(w.game, "ante", args![t, seat as u8, Workspace("stake")])
+        .call_method(w.game, "ante", args![t, seat as u8, b(payout.key.to_vec()), b(proof), Workspace("stake")])
         .finish()
         .seal(&w.key);
     w.test.execute_expect_success(tx, vec![]);
+    payout
 }
 
 fn finish_with_village_win(w: &mut World, wolf: usize) {
@@ -489,74 +502,194 @@ fn payout(amount: u64) -> tari_template_test_tooling::support::stealth::StealthS
     tari_template_test_tooling::support::stealth::generate_mint_statement([amount], 0u64, None)
 }
 
+/// A key the test can seal with, and its public half for the proof.
+fn sealer(w: &mut World, seed: u8) -> (RistrettoSecretKey, Vec<u8>) {
+    let (secret, public) = w.test.new_key_pair(seed);
+    (secret, tari_crypto::tari_utilities::ByteArray::as_bytes(&public).to_vec())
+}
+
+fn claim_tx(w: &World, method: &str, seat: usize, proof: Vec<u8>, amount: u64, key: &RistrettoSecretKey) -> Transaction {
+    let t = w.table;
+    let data = payout(amount);
+    w.test
+        .transaction()
+        .call_method(w.game, method, args![t, seat as u8, b(proof)])
+        .put_last_instruction_output_on_workspace("won")
+        .stealth_transfer_with_input_bucket(tari_template_lib::prelude::TARI_TOKEN, data.statement, "won")
+        .finish()
+        .seal(key)
+}
+
 #[test]
-fn stakes_close_at_nightfall() {
+fn stakes_close_before_the_deal() {
     let mut w = world();
     w.join_all();
     w.shuffle_all();
-    w.deal_all();
-    let wolf = w.wolf();
-    let winner = (wolf + 1) % N;
-    // Stakes close at nightfall, so this table is too late.
     let t = w.table;
+    let payout = Seat::new(t, 0);
+    let proof = w.seats[0].ante_proof(&payout.key);
     let tx = w.test.transaction()
-        .call_method(w.account, "withdraw", args![tari_template_lib::prelude::TARI_TOKEN, Amount::from(1000u64)])
+        .call_method(w.account, "withdraw", args![tari_template_lib::prelude::TARI_TOKEN, Amount::from(danse_macabre::ANTE)])
         .put_last_instruction_output_on_workspace("stake")
-        .call_method(w.game, "ante", args![t, winner as u8, Workspace("stake")])
+        .call_method(w.game, "ante", args![t, 0u8, b(payout.key.to_vec()), b(proof), Workspace("stake")])
         .finish().seal(&w.key);
     let why = format!("{:?}", w.test.execute_expect_failure(tx, vec![]));
-    assert!(why.contains("The first night has begun"), "{why}");
+    assert!(why.contains("Stakes have closed"), "{why}");
 }
 
 #[test]
 fn stakes_pay_the_winners_and_only_once() {
     let mut w = world();
     w.join_all();
-    stake(&mut w, 0, 1_000);
-    stake(&mut w, 1, 1_000);
+    let keys = [stake(&mut w, 0), stake(&mut w, 1)];
     w.shuffle_all();
     w.deal_all();
     let wolf = w.wolf();
     finish_with_village_win(&mut w, wolf);
-    let t = w.table;
     let winners: Vec<usize> = [0usize, 1].into_iter().filter(|s| *s != wolf).collect();
-    let share = 2_000 / winners.len() as u64;
+    let share = 2 * danse_macabre::ANTE / winners.len() as u64;
     let seat = winners[0];
-    let data = payout(share);
-    let commitment = *data.statement.outputs_statement.outputs[0].commitment();
-    let proof = w.seats[seat].collect_proof(commitment.as_ref());
+    let (key, public) = sealer(&mut w, 240);
+    let proof = keys[seat].payout_proof(b"collect", &public);
 
-    // A proof for one output can't be used to pay a different one.
-    let other = payout(share);
-    w.refused("collect", args![t, seat as u8, other.statement.clone(), b(proof.clone())], "Bad collect proof");
-    let wrong = payout(share - 1);
-    let wrong_commitment = *wrong.statement.outputs_statement.outputs[0].commitment();
-    let wrong_proof = w.seats[seat].collect_proof(wrong_commitment.as_ref());
-    w.refused("collect", args![t, seat as u8, wrong.statement.clone(), b(wrong_proof)], "Wrong amount");
+    // The same proof under another seal key is a copy, and it fails.
+    let (thief, _) = sealer(&mut w, 241);
+    let tx = claim_tx(&w, "collect", seat, proof.clone(), share, &thief);
+    let why = format!("{:?}", w.test.execute_expect_failure(tx, vec![]));
+    assert!(why.contains("Bad payout proof"), "{why}");
 
-    w.ok("collect", args![t, seat as u8, data.statement.clone(), b(proof.clone())]);
-    let again = payout(share);
-    let again_commitment = *again.statement.outputs_statement.outputs[0].commitment();
-    let again_proof = w.seats[seat].collect_proof(again_commitment.as_ref());
-    w.refused("collect", args![t, seat as u8, again.statement.clone(), b(again_proof)], "Already collected");
+    let tx = claim_tx(&w, "collect", seat, proof.clone(), share, &key);
+    w.test.execute_expect_success(tx, vec![]);
+
+    let (key, public) = sealer(&mut w, 242);
+    let again = keys[seat].payout_proof(b"collect", &public);
+    let tx = claim_tx(&w, "collect", seat, again, share, &key);
+    let why = format!("{:?}", w.test.execute_expect_failure(tx, vec![]));
+    assert!(why.contains("Already collected"), "{why}");
+}
+
+#[test]
+fn a_dead_seats_public_secret_cannot_take_its_payout() {
+    let mut w = world();
+    w.join_all();
+    let keys: Vec<Seat> = (0..N).map(|s| stake(&mut w, s)).collect();
+    w.shuffle_all();
+    w.deal_all();
+    let wolf = w.wolf();
+    let victim = (wolf + 1) % N;
+    finish_with_village_win(&mut w, wolf);
+    let (key, public) = sealer(&mut w, 243);
+    // The victim's seat secret is public now, so anyone can prove with it.
+    let forged = w.seats[victim].payout_proof(b"collect", &public);
+    let tx = claim_tx(&w, "collect", victim, forged, N as u64 * danse_macabre::ANTE / 4, &key);
+    let why = format!("{:?}", w.test.execute_expect_failure(tx, vec![]));
+    assert!(why.contains("Bad payout proof"), "{why}");
+    let real = keys[victim].payout_proof(b"collect", &public);
+    let tx = claim_tx(&w, "collect", victim, real, N as u64 * danse_macabre::ANTE / 4, &key);
+    w.test.execute_expect_success(tx, vec![]);
 }
 
 #[test]
 fn a_seat_that_lost_collects_nothing() {
     let mut w = world();
     w.join_all();
-    stake(&mut w, 0, 1_000);
-    stake(&mut w, 1, 1_000);
-    stake(&mut w, 2, 1_000);
-    stake(&mut w, 3, 1_000);
-    stake(&mut w, 4, 1_000);
+    let keys: Vec<Seat> = (0..N).map(|s| stake(&mut w, s)).collect();
     w.shuffle_all();
     w.deal_all();
     let wolf = w.wolf();
     finish_with_village_win(&mut w, wolf);
+    let (key, public) = sealer(&mut w, 244);
+    let proof = keys[wolf].payout_proof(b"collect", &public);
+    let tx = claim_tx(&w, "collect", wolf, proof, 1_250_000, &key);
+    let why = format!("{:?}", w.test.execute_expect_failure(tx, vec![]));
+    assert!(why.contains("This seat lost"), "{why}");
+}
+
+#[test]
+fn a_surviving_wolf_unmasks_and_collects() {
+    let mut w = world();
+    w.join_all();
+    let keys: Vec<Seat> = (0..N).map(|s| stake(&mut w, s)).collect();
+    w.shuffle_all();
+    w.deal_all();
+    let wolf = w.wolf();
+    let villagers: Vec<usize> = (0..N).filter(|i| *i != wolf).collect();
+    w.night(villagers[0]);
+    w.open();
+    w.reveal();
+    w.vote(villagers[1]);
+    w.open();
+    w.reveal();
+    w.night(villagers[2]);
+    w.open();
+    w.reveal();
+    assert_eq!(w.state().winner, WINNER_WOLF);
     let t = w.table;
-    let data = payout(1_250);
-    let commitment = *data.statement.outputs_statement.outputs[0].commitment();
-    let proof = w.seats[wolf].collect_proof(commitment.as_ref());
-    w.refused("collect", args![t, wolf as u8, data.statement.clone(), b(proof)], "This seat lost");
+    let villager = w.seats[villagers[3]].clone();
+    w.refused("unmask", args![t, villager.index as u8, b(villager.secret.to_vec())], "That seat is no wolf");
+    let s = w.seats[wolf].clone();
+    w.ok("unmask", args![t, wolf as u8, b(s.secret.to_vec())]);
+    let (key, public) = sealer(&mut w, 245);
+    let proof = keys[wolf].payout_proof(b"collect", &public);
+    let tx = claim_tx(&w, "collect", wolf, proof, N as u64 * danse_macabre::ANTE, &key);
+    w.test.execute_expect_success(tx, vec![]);
+}
+
+#[test]
+fn nobody_else_can_shuffle_for_a_seat() {
+    let mut w = world();
+    w.join_all();
+    let joint = w.joint();
+    let deck = ciphers(&w.state().deck);
+    let intruder = Seat::new(w.table, 0);
+    let steps = encode_steps(&intruder.shuffle(&deck, &joint));
+    let by = intruder.shuffle_proof(&steps);
+    let t = w.table;
+    w.refused("shuffle", args![t, 0u8, b(steps), b(by)], "Only the seat can shuffle");
+}
+
+#[test]
+fn nobody_else_can_post_a_seats_night_action() {
+    let mut w = world();
+    let wolf = w.ready();
+    let state = w.state();
+    let joint = w.joint();
+    let residual = ciphers(&state.residual);
+    let seat = (wolf + 1) % N;
+    let intruder = Seat::new(w.table, seat as u32);
+    let targets: Vec<usize> = (0..N).filter(|i| *i != seat).collect();
+    let (votes, _) = intruder.night(1, &joint, &residual[seat], &targets, N, None);
+    let real_key = w.seats[seat].key;
+    let statement = st::night_statement::<Native>(&joint, &real_key, &residual[seat], &votes, &targets);
+    let ctx = st::ctx(b"night", w.table, 1, seat as u32, &[]);
+    let forged = shroud::sigma::prove::<Native>(&ctx, &statement, 0, &(0..=N).map(|_| random_scalar()).collect::<Vec<_>>(), &mut random_scalar);
+    let t = w.table;
+    w.refused("night", args![t, seat as u8, b(encode_ciphers(&votes)), b(forged)], "Bad night proof");
+}
+
+#[test]
+fn nobody_else_can_post_a_seats_day_vote() {
+    let mut w = world();
+    let wolf = w.ready();
+    let victim = (wolf + 1) % N;
+    w.night(victim);
+    w.open();
+    w.reveal();
+    let state = w.state();
+    let joint = w.joint();
+    let seat = (wolf + 2) % N;
+    let intruder = Seat::new(w.table, seat as u32);
+    let targets: Vec<usize> = (0..N).filter(|i| *i != seat && state.alive & (1 << i) != 0).collect();
+    let (votes, proof) = intruder.vote(state.round, &joint, &targets, N, targets[0]);
+    let t = w.table;
+    w.refused("vote", args![t, seat as u8, b(encode_ciphers(&votes)), b(proof)], "Bad vote proof");
+}
+
+#[test]
+fn a_join_needs_the_ticket() {
+    let mut w = world();
+    let t = w.table;
+    let s = w.seats[0].clone();
+    let wrong = Seat::new(t, 0).invite_proof(0, &s.key);
+    w.refused("join", args![t, 0u8, b(s.key.to_vec()), b(s.join_proof()), b(wrong)], "Bad invite");
 }

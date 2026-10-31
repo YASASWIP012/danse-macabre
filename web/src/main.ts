@@ -1,7 +1,7 @@
 import "./style.css";
 import init, * as w from "./wasm/danse_client";
 import { hex, int, nextTableId, readTable, send, type TableState } from "./chain";
-import { CARD_WOLF, PHASE, act, cardOf, isAlive, joinSeats, living, type Choices, type Seat } from "./game";
+import { CARD_WOLF, PHASE, act, cardOf, isAlive, joinSeats, living, unmask, type Choices, type Seat } from "./game";
 import { EXPLORER, SEATS } from "./net";
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -97,6 +97,8 @@ const LINES: Record<number, string> = {
   [PHASE.REVEAL]: "The dead seat turns its card face up",
 };
 
+const local = () => [mine, ...ghosts].filter((s): s is Seat => s !== null);
+
 /** Plays until the table ends. Every tab does the same: read, act for its own seats, repeat. */
 async function play() {
   let lastPhase = -1;
@@ -112,6 +114,12 @@ async function play() {
     }
     drawSeats(t);
     if (t.phase === PHASE.OVER) {
+      const hiddenWolf = t.winner === 2 && t.wolf === 255 ? local().find((s) => cardOf(t, s) === CARD_WOLF) : undefined;
+      if (hiddenWolf) {
+        const sent = await unmask(t, hiddenWolf);
+        log("The wolf turns its card over", sent.id);
+        continue;
+      }
       say(t.winner === 1 ? "The wolf is dead. The village wins." : t.winner === 2 ? "Only two remain. The wolf wins." : "The table stalled and closed.");
       if (t.wolf !== 255) log(`${name(t.wolf)} held the wolf.`);
       return;
@@ -123,16 +131,19 @@ async function play() {
       await wait(1500);
     }
 
-    const local = [mine, ...ghosts].filter((s): s is Seat => s !== null);
+    const seated = local();
     const others = living(t).filter((i) => i !== me);
     const choices: Choices = {};
     if (t.phase === PHASE.NIGHT) {
-      const wolf = local.find((s) => cardOf(t, s) === CARD_WOLF);
-      if (wolf && wolf === mine && isAlive(t, me) && !(t.acted & (1 << me))) {
-        choices.kill = await ask("Choose who dies tonight.", others);
-      } else if (wolf) {
-        choices.kill = pickRandom(living(t).filter((i) => i !== wolf.index));
+      const wolf = seated.find((s) => cardOf(t, s) === CARD_WOLF);
+      // Everyone picks a name at night, and a villager's pick goes nowhere. If only the wolf paused
+      // to think, the pause would give them away.
+      if (mine && isAlive(t, me) && !(t.acted & (1 << me))) {
+        const pick = await ask(myCard === CARD_WOLF ? "Choose who dies tonight." : "Choose who you'd watch tonight. It changes nothing, and nobody can see that.", others);
+        if (wolf === mine) choices.kill = pick;
+        await wait(1000 + Math.random() * 4000);
       }
+      if (wolf && wolf !== mine) choices.kill = pickRandom(living(t).filter((i) => i !== wolf.index));
       if (announced !== key) say("Night falls. Every living seat posts one sealed action. Only one of them means anything.");
       announced = key;
     }
@@ -149,7 +160,7 @@ async function play() {
     if (t.phase === PHASE.NIGHT_OPEN && lastPhase !== t.phase) say("Dawn. Only the total opens.");
     lastPhase = t.phase;
 
-    const live = local.filter((s) => t.phase === PHASE.REVEAL || t.phase === PHASE.SHUFFLE || isAlive(t, s.index));
+    const live = seated.filter((s) => t.phase === PHASE.REVEAL || t.phase === PHASE.SHUFFLE || isAlive(t, s.index));
     let sent = null;
     try {
       sent = live.length ? await act(t, live, choices) : null;

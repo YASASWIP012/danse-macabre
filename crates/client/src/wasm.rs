@@ -56,18 +56,33 @@ pub fn join_proof(game: u64, index: u32, secret: &str) -> String {
 }
 
 #[wasm_bindgen]
-pub fn fee_proof(game: u64, index: u32, secret: &str, nonce: u32) -> String {
-    hex::encode(seat(game, index, secret).fee_proof(nonce))
+pub fn fee_proof(game: u64, index: u32, secret: &str, nonce: u32, sealer: &str) -> String {
+    hex::encode(seat(game, index, secret).fee_proof(nonce, &pt(sealer)))
 }
 
 #[wasm_bindgen]
-pub fn ticket_proof(game: u64, secret: &str, nonce: u32) -> String {
-    hex::encode(seat(game, 0, secret).ticket_proof(nonce))
+pub fn ticket_proof(game: u64, secret: &str, nonce: u32, sealer: &str) -> String {
+    hex::encode(seat(game, 0, secret).ticket_proof(nonce, &pt(sealer)))
 }
 
 #[wasm_bindgen]
-pub fn collect_proof(game: u64, index: u32, secret: &str, commitment: &str) -> String {
-    hex::encode(seat(game, index, secret).collect_proof(&hex::decode(commitment).expect("hex")))
+pub fn invite_proof(game: u64, ticket: &str, index: u32, key: &str) -> String {
+    hex::encode(seat(game, 0, ticket).invite_proof(index, &pt(key)))
+}
+
+#[wasm_bindgen]
+pub fn ante_proof(game: u64, index: u32, secret: &str, payout_key: &str) -> String {
+    hex::encode(seat(game, index, secret).ante_proof(&pt(payout_key)))
+}
+
+#[wasm_bindgen]
+pub fn shuffle_proof(game: u64, index: u32, secret: &str, steps: &str) -> String {
+    hex::encode(seat(game, index, secret).shuffle_proof(&hex::decode(steps).expect("hex")))
+}
+
+#[wasm_bindgen]
+pub fn payout_proof(game: u64, index: u32, secret: &str, action: &str, sealer: &str) -> String {
+    hex::encode(seat(game, index, secret).payout_proof(action.as_bytes(), &pt(sealer)))
 }
 
 /// Every switch output and proof, in network order.

@@ -57,7 +57,8 @@ function calls(t: TableState, seats: Seat[], choices: Choices): Call[] {
         const seat = seats.find((s) => s.index === turn);
         if (!seat) break;
         const steps = w.shuffle(table, seat.index, seat.secret, deck, t.joint);
-        out.push({ method: "shuffle", args: [int(table), int(seat.index), hex(steps)] });
+        const by = w.shuffle_proof(table, seat.index, seat.secret, steps);
+        out.push({ method: "shuffle", args: [int(table), int(seat.index), hex(steps), hex(by)] });
         deck = applySwitches(deck, steps);
       }
       break;
@@ -108,18 +109,28 @@ function calls(t: TableState, seats: Seat[], choices: Choices): Call[] {
 export async function act(t: TableState, seats: Seat[], choices: Choices = {}) {
   const list = calls(t, seats, choices);
   if (!list.length) return null;
-  const payer = seats[0];
-  const proof = w.fee_proof(t.id, payer.index, payer.secret, t.feeNonce);
+  const payer = seats.find((s) => isAlive(t, s.index) || t.turn === s.index) ?? seats[0];
+  const proof = (sealer: string) => w.fee_proof(t.id, payer.index, payer.secret, t.feeNonce, sealer);
   return send({ kind: "seat", table: t.id, seat: payer.index, proof }, list);
 }
 
-/** Takes the lowest free seats, paid for by the invite ticket. */
+/** Takes these seats, paid for by the invite ticket, which also signs each key in. */
 export async function joinSeats(table: bigint, ticket: string, seats: Seat[]) {
   const t = await readTable(table);
   if (!t) throw new Error("No such table");
-  const calls: Call[] = seats.map((s) => ({
-    method: "join",
-    args: [int(table), int(s.index), hex(w.public_key(s.secret)), hex(w.join_proof(table, s.index, s.secret))],
-  }));
-  return send({ kind: "ticket", table, proof: w.ticket_proof(table, ticket, t.feeNonce) }, calls);
+  const calls: Call[] = seats.map((s) => {
+    const key = w.public_key(s.secret);
+    return {
+      method: "join",
+      args: [int(table), int(s.index), hex(key), hex(w.join_proof(table, s.index, s.secret)), hex(w.invite_proof(table, ticket, s.index, key))],
+    };
+  });
+  const proof = (sealer: string) => w.ticket_proof(table, ticket, t.feeNonce, sealer);
+  return send({ kind: "ticket", table, proof }, calls);
+}
+
+/** After a wolf win, the surviving wolf's tab turns the card over. */
+export async function unmask(t: TableState, seat: Seat) {
+  const proof = (sealer: string) => w.fee_proof(t.id, seat.index, seat.secret, t.feeNonce, sealer);
+  return send({ kind: "seat", table: t.id, seat: seat.index, proof }, [{ method: "unmask", args: [int(t.id), int(seat.index), hex(seat.secret)] }]);
 }

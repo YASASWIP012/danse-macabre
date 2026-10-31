@@ -97,12 +97,24 @@ fn one_hot<G: Group>(joint: &Pt, votes: &[Cipher], pick: Option<usize>) -> Branc
     branch
 }
 
-/// A day vote: exactly one of the `targets` gets one vote.
-pub fn vote_statement<G: Group>(joint: &Pt, votes: &[Cipher], targets: &[usize]) -> Vec<Branch> {
-    targets.iter().map(|t| one_hot::<G>(joint, votes, Some(*t))).collect()
+/// The clause that says the prover holds this seat's key.
+fn holds_key(seat_key: &Pt) -> Clause {
+    vec![Eq { base: GENERATOR, target: *seat_key }]
 }
 
-/// A night action. Branch 0: every vote encrypts zero. Branch `1 + k`: the seat's card is the wolf,
+/// A day vote by the holder of `seat_key`: exactly one of the `targets` gets one vote.
+pub fn vote_statement<G: Group>(joint: &Pt, seat_key: &Pt, votes: &[Cipher], targets: &[usize]) -> Vec<Branch> {
+    targets
+        .iter()
+        .map(|t| {
+            let mut branch = vec![holds_key(seat_key)];
+            branch.extend(one_hot::<G>(joint, votes, Some(*t)));
+            branch
+        })
+        .collect()
+}
+
+/// A night action by the holder of `seat_key`. Branch 0: every vote encrypts zero. Branch `1 + k`: the seat's card is the wolf,
 /// shown by decrypting its private residual card under its own key, and exactly `targets[k]` gets
 /// one vote. Villagers can only ever take branch 0, and nobody can tell which branch was taken.
 pub fn night_statement<G: Group>(
@@ -117,7 +129,9 @@ pub fn night_statement<G: Group>(
         Eq { base: GENERATOR, target: *seat_key },
         Eq { base: residual.c1, target: G::sub(&residual.c2, &wolf) },
     ];
-    let mut branches = vec![one_hot::<G>(joint, votes, None)];
+    let mut empty = vec![holds_key(seat_key)];
+    empty.extend(one_hot::<G>(joint, votes, None));
+    let mut branches = vec![empty];
     for target in targets {
         let mut branch = vec![is_wolf.clone()];
         branch.extend(one_hot::<G>(joint, votes, Some(*target)));

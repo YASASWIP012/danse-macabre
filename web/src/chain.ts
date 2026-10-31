@@ -1,13 +1,13 @@
 // Talks to Esmeralda. Every transaction is sealed by a throwaway key and paid for by the fee pot.
-import { Network, TransactionBuilder, bytesLiteral, fromHexStr, intLiteral, resolveMaxEpoch, sendTransaction, toHexStr, type InstructionArg } from "@tari-project/ootle";
+import { Network, TransactionBuilder, bytesLiteral, fromHexStr, generateSealKeypair, intLiteral, resolveMaxEpoch, resolveTransaction, sealTransaction, signTransaction, toHexStr, type InstructionArg } from "@tari-project/ootle";
 import { IndexerProvider } from "@tari-project/ootle-indexer";
-import { EphemeralKeySigner } from "@tari-project/ootle-secret-key-wallet";
 import { COMPONENT, INDEXER, MAX_FEE } from "./net";
 
+/** How the pot is asked to pay. Each proof is bound to the transaction's seal key. */
 export type Fee =
   | { kind: "open" }
-  | { kind: "ticket"; table: bigint; proof: string }
-  | { kind: "seat"; table: bigint; seat: number; proof: string };
+  | { kind: "ticket"; table: bigint; proof: (sealer: string) => string }
+  | { kind: "seat"; table: bigint; seat: number; proof: (sealer: string) => string };
 
 export interface Call {
   method: string;
@@ -21,14 +21,14 @@ export const toHex = toHexStr;
 let provider: Promise<IndexerProvider> | null = null;
 const connect = () => (provider ??= IndexerProvider.connect({ url: INDEXER, network: Network.Esmeralda }));
 
-function feeCall(fee: Fee): Call {
+function feeCall(fee: Fee, sealer: string): Call {
   switch (fee.kind) {
     case "open":
       return { method: "pay_open_fee", args: [int(MAX_FEE)] };
     case "ticket":
-      return { method: "pay_ticket_fee", args: [int(fee.table), hex(fee.proof), int(MAX_FEE)] };
+      return { method: "pay_ticket_fee", args: [int(fee.table), hex(fee.proof(sealer)), int(MAX_FEE)] };
     case "seat":
-      return { method: "pay_seat_fee", args: [int(fee.table), int(fee.seat), hex(fee.proof), int(MAX_FEE)] };
+      return { method: "pay_seat_fee", args: [int(fee.table), int(fee.seat), hex(fee.proof(sealer)), int(MAX_FEE)] };
   }
 }
 
@@ -37,18 +37,30 @@ export interface Sent {
   ms: number;
 }
 
-/** Sends one transaction of `calls` and waits until it finalizes. */
-export async function send(fee: Fee, calls: Call[]): Promise<Sent> {
+/** Sends one transaction of `calls`, sealed by a key made for it, and waits until it finalizes. */
+export async function send(fee: Fee, calls: Call[] | ((sealer: string) => Call[]), extra?: (b: TransactionBuilder) => TransactionBuilder): Promise<Sent> {
   const started = performance.now();
   const p = await connect();
-  const pay = feeCall(fee);
+  const seal = generateSealKeypair();
+  const sealer = toHexStr(seal.public_key);
+  const pay = feeCall(fee, sealer);
   let b = new TransactionBuilder(Network.Esmeralda, await resolveMaxEpoch(p)).withFeeInstructionsBuilder((f) =>
     f.callMethod({ componentAddress: COMPONENT as never, methodName: pay.method }, pay.args),
   );
-  for (const call of calls) b = b.callMethod({ componentAddress: COMPONENT as never, methodName: call.method }, call.args);
-  const signer = EphemeralKeySigner.generate(Network.Esmeralda);
-  const result: any = await sendTransaction(p, signer, b.buildUnsignedTransaction());
-  return { id: String(result?.transaction?.id ?? result?.transaction_id ?? ""), ms: performance.now() - started };
+  for (const call of typeof calls === "function" ? calls(sealer) : calls) {
+    b = b.callMethod({ componentAddress: COMPONENT as never, methodName: call.method }, call.args);
+  }
+  if (extra) b = extra(b);
+  const body = b.buildUnsignedTransaction();
+  (body as { is_seal_signer_authorized?: boolean }).is_seal_signer_authorized = true;
+  const signed = await signTransaction([], await resolveTransaction(p, body), seal);
+  const { transaction_id: id } = await p.submitTransaction(sealTransaction(signed));
+  const pending = p.watchTransactionSSE(id);
+  await pending.watch();
+  const receipt: any = await pending.getReceipt();
+  const decision = receipt?.result?.Finalized?.final_decision;
+  if (decision && decision !== "Commit") throw new Error(`Refused: ${JSON.stringify(receipt).slice(0, 300)}`);
+  return { id: String(id), ms: performance.now() - started };
 }
 
 export interface TableState {
@@ -69,6 +81,7 @@ export interface TableState {
   residual: string;
   tally: string;
   feeNonce: number;
+  staked: number;
 }
 
 const hexOf = (v: any): string => {
@@ -108,23 +121,9 @@ export async function readTable(id: bigint): Promise<TableState | null> {
     deck: hexOf(f("deck", 13)),
     residual: hexOf(f("residual", 14)),
     tally: hexOf(f("tally", 15)),
-    feeNonce: Number(f("fee_nonce", 19)),
+    staked: Number(f("staked", 19)),
+    feeNonce: Number(f("fee_nonce", 22)),
   };
-}
-
-/** Sends with retries, for the moments two players touch the table at once. */
-export async function sendRetrying(build: () => Promise<{ fee: Fee; calls: Call[] }>, tries = 4): Promise<Sent> {
-  let failure: unknown;
-  for (let attempt = 0; attempt < tries; attempt++) {
-    try {
-      const { fee, calls } = await build();
-      return await send(fee, calls);
-    } catch (e) {
-      failure = e;
-      await new Promise((r) => setTimeout(r, 1500 + attempt * 1500));
-    }
-  }
-  throw failure;
 }
 
 export async function nextTableId(): Promise<bigint> {

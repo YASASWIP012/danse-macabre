@@ -160,7 +160,7 @@ fn a_villager_cannot_forge_a_kill() {
         &ctx,
         &statement,
         0,
-        &(0..N).map(|_| random_scalar()).collect::<Vec<_>>(),
+        &(0..=N).map(|_| random_scalar()).collect::<Vec<_>>(),
         &mut random_scalar,
     );
     assert!(!verify::<Native>(&ctx, &statement, &forged));

@@ -30,10 +30,11 @@ pub const MAX_TX_FEE: u64 = 5_000_000;
 pub const MAX_GAME_FEES: u64 = 200_000_000;
 /// Tables that may open per epoch, which bounds what strangers can draw from the pot.
 pub const MAX_OPENS_PER_EPOCH: u32 = 12;
-/// Epochs a table may stall before anyone can close it. An epoch is about 48 minutes.
+/// A table may be closed this many epoch boundaries after its last move. An epoch is about 48
+/// minutes, so that is somewhere between 48 and 96 minutes.
 pub const STALL_EPOCHS: u64 = 2;
-/// The most one seat may stake, in µT.
-pub const MAX_ANTE: u64 = 100_000_000;
+/// The stake, in µT. Every staked seat stakes the same.
+pub const ANTE: u64 = 1_000_000;
 /// Finished tables kept in state.
 pub const KEEP_FINISHED: u64 = 8;
 
@@ -182,14 +183,16 @@ mod danse_macabre {
         /// joining. `fee` is drawn from the pot, up to a cap.
         pub fn open_table(&mut self, ticket: Bytes, fee: u64) -> u64 {
             let now = Consensus::current_epoch();
+            self.count_open();
             self.draw(fee);
 
             assert!(ticket.len() == 32, "Bad ticket");
-            point_at(&ticket, 0);
+            assert!(point_at(&ticket, 0) != IDENTITY, "Bad ticket");
             let id = self.next_table;
             self.next_table += 1;
 
-            self.tables.retain(|old, t| t.phase != OVER || *old + KEEP_FINISHED >= id);
+            // A finished table with money still in it stays until the money has gone.
+            self.tables.retain(|old, t| t.phase != OVER || *old + KEEP_FINISHED >= id || !all_paid(t));
             self.tables.insert(id, Table {
                 seats: SEATS as u8,
                 phase: LOBBY,
@@ -210,7 +213,8 @@ mod danse_macabre {
                 opening: Bytes::from_vec(Vec::new()),
                 revealed: Bytes::from_vec(vec![0u8; SEATS * 32]),
                 ticket,
-                antes: vec![0; SEATS],
+                staked: 0,
+                payouts: Bytes::from_vec(vec![0u8; SEATS * 32]),
                 collected: 0,
                 fee_nonce: 0,
                 fees_used: 0,
@@ -220,15 +224,18 @@ mod danse_macabre {
             id
         }
 
-        /// Fee stage: pay for this transaction from the pot. Anyone with a seat at the table, or
-        /// the invite ticket while it fills, may ask, and the proof binds a fresh nonce. No account
-        /// and no wallet appear anywhere in the transaction.
+        /// Fee stage: pay for this transaction from the pot. A living seat at the table may ask.
+        /// The proof binds a fresh nonce and this transaction's seal key, so it can't be lifted out
+        /// of the mempool. No account and no wallet appear anywhere in the transaction.
         pub fn pay_seat_fee(&mut self, table: u64, seat: u8, proof: Bytes, amount: u64) {
             let t = self.tables.get(&table).expect("No such table");
+            assert!((seat as usize) < SEATS && t.joined & (1 << seat) != 0, "Empty seat");
+            assert!(t.phase != OVER || !all_paid(t), "This table is finished");
+            assert!(t.phase == OVER || t.alive & (1 << seat) != 0 || t.turn == seat, "The dead pay no fees");
             let key = point_at(&t.keys, seat as usize);
-            let statement = st::key_statement(&key);
-            let ctx = st::ctx(b"fee", table, t.fee_nonce, seat as u32, &[]);
-            assert!(verify::<Engine>(&ctx, &statement, &proof), "Bad fee proof");
+            let sealer = CallerContext::transaction_signer_public_key();
+            let ctx = st::ctx(b"fee", table, t.fee_nonce, seat as u32, sealer.as_ref());
+            assert!(verify::<Engine>(&ctx, &st::key_statement(&key), &proof), "Bad fee proof");
             self.charge(table, amount);
         }
 
@@ -236,7 +243,8 @@ mod danse_macabre {
             let t = self.tables.get(&table).expect("No such table");
             assert!(t.phase == LOBBY, "Tickets only work in the lobby");
             let key = point_at(&t.ticket, 0);
-            let ctx = st::ctx(b"ticket", table, t.fee_nonce, 0, &[]);
+            let sealer = CallerContext::transaction_signer_public_key();
+            let ctx = st::ctx(b"ticket", table, t.fee_nonce, 0, sealer.as_ref());
             assert!(verify::<Engine>(&ctx, &st::key_statement(&key), &proof), "Bad ticket proof");
             self.charge(table, amount);
         }
@@ -244,17 +252,13 @@ mod danse_macabre {
         /// Fee stage, for opening a table. Capped per call, and limited per epoch here because the
         /// fee stage commits even if the rest of the transaction fails.
         pub fn pay_open_fee(&mut self, amount: u64) {
-            let now = Consensus::current_epoch();
-            if now != self.open_epoch {
-                self.open_epoch = now;
-                self.opens_this_epoch = 0;
-            }
-            assert!(self.opens_this_epoch < MAX_OPENS_PER_EPOCH, "Too many tables this epoch");
-            self.opens_this_epoch += 1;
+            self.count_open();
             self.draw(amount);
         }
 
-        pub fn join(&mut self, table: u64, seat: u8, key: Bytes, proof: Bytes) {
+        /// Takes a seat. `invite` proves the ticket holder let this key sit here, and `proof` that
+        /// the joiner holds the key, which stops a rogue joint key.
+        pub fn join(&mut self, table: u64, seat: u8, key: Bytes, proof: Bytes, invite: Bytes) {
             let t = self.table(table);
             assert!(t.phase == LOBBY, "This table is full");
             let i = seat as usize;
@@ -264,6 +268,9 @@ mod danse_macabre {
             assert!(y != IDENTITY, "Bad key");
             let ctx = st::ctx(b"join", table, 0, seat as u32, &[]);
             assert!(verify::<Engine>(&ctx, &st::key_statement(&y), &proof), "Bad key proof");
+            let ctx = st::ctx(b"invite", table, 0, seat as u32, &y);
+            let ticket = point_at(&t.ticket, 0);
+            assert!(verify::<Engine>(&ctx, &st::key_statement(&ticket), &invite), "Bad invite");
 
             set_point(&mut t.keys, i, &y);
             t.joined |= 1 << seat;
@@ -284,9 +291,12 @@ mod danse_macabre {
         }
 
         /// One seat's shuffle: the output of every switch with its proof, in network order.
-        pub fn shuffle(&mut self, table: u64, seat: u8, steps: Bytes) {
+        pub fn shuffle(&mut self, table: u64, seat: u8, steps: Bytes, proof: Bytes) {
             let t = self.table(table);
             assert!(t.phase == SHUFFLE && t.turn == seat, "Not your shuffle");
+            let key = point_at(&t.keys, seat as usize);
+            let ctx = st::ctx(b"shuffle-by", table, 0, seat as u32, &Engine::hash_scalar(&steps));
+            assert!(verify::<Engine>(&ctx, &st::key_statement(&key), &proof), "Only the seat can shuffle");
             let joint = point_at(&t.joint, 0);
             let switches = network::switches(SEATS);
             assert!(steps.len() == switches.len() * SWITCH_LEN, "Bad shuffle length");
@@ -379,7 +389,8 @@ mod danse_macabre {
             assert_can_act(t, seat);
             let posted = read_votes(&votes);
             let joint = point_at(&t.joint, 0);
-            let statement = st::vote_statement::<Engine>(&joint, &posted, &living_except(t, seat));
+            let key = point_at(&t.keys, seat as usize);
+            let statement = st::vote_statement::<Engine>(&joint, &key, &posted, &living_except(t, seat));
             let ctx = st::ctx(b"vote", table, t.round, seat as u32, &[]);
             assert!(verify::<Engine>(&ctx, &statement, &proof), "Bad vote proof");
             add_votes(t, &posted);
@@ -461,57 +472,83 @@ mod danse_macabre {
             touch(t);
         }
 
-        /// Stake on this seat before the first night. Pay it from a stealth coin, so the stake
-        /// names no wallet.
-        pub fn ante(&mut self, table: u64, seat: u8, stake: Bucket) {
-            let amount = u64::try_from(stake.amount().to_u128()).expect("Stake too large");
+        /// Stake on this seat before the shuffle ends. Pay it from a stealth coin, so the stake
+        /// names no wallet. `payout_key` claims the money later, because the seat's own key goes
+        /// public if the seat dies.
+        pub fn ante(&mut self, table: u64, seat: u8, payout_key: Bytes, proof: Bytes, stake: Bucket) {
             let t = self.table(table);
-            assert!(t.phase < NIGHT, "The first night has begun");
+            assert!(t.phase == LOBBY || t.phase == SHUFFLE, "Stakes have closed");
             assert!((seat as usize) < SEATS && t.joined & (1 << seat) != 0, "Empty seat");
-            assert!(t.antes[seat as usize] == 0, "Already staked");
-            assert!(amount > 0 && amount <= MAX_ANTE, "Bad stake");
-            t.antes[seat as usize] = amount;
+            assert!(t.staked & (1 << seat) == 0, "Already staked");
+            assert!(stake.amount() == Amount::from(ANTE), "Wrong stake");
+            assert!(payout_key.len() == 32, "Bad payout key");
+            let payout = point_at(&payout_key, 0);
+            assert!(payout != IDENTITY, "Bad payout key");
+            let key = point_at(&t.keys, seat as usize);
+            let ctx = st::ctx(b"ante", table, 0, seat as u32, &payout);
+            assert!(verify::<Engine>(&ctx, &st::key_statement(&key), &proof), "Only the seat can stake");
+            t.staked |= 1 << seat;
+            let mut payouts = t.payouts.to_vec();
+            set_point(&mut payouts, seat as usize, &payout);
+            t.payouts = Bytes::from_vec(payouts);
             self.stakes.deposit(stake);
             emit_event("Danse.Staked", metadata! { "table" => table.to_string(), "seat" => seat.to_string() });
         }
 
-        /// A winner takes their share into one fresh stealth output. The proof binds that output's
-        /// commitment, so copying this call can't redirect the money.
-        pub fn collect(&mut self, table: u64, seat: u8, statement: StealthTransferStatement, proof: Bytes) {
+        /// After a wolf win the surviving wolf turns their card over, which names the winner. It
+        /// checks the secret against the seat key and the card, so nobody else can claim it.
+        pub fn unmask(&mut self, table: u64, seat: u8, secret: Bytes) {
+            let t = self.table(table);
+            assert!(t.phase == OVER && t.winner == WINNER_WOLF && t.wolf == u8::MAX, "Nothing to unmask");
+            assert!((seat as usize) < SEATS && secret.len() == 32, "Bad secret");
+            let mut x = [0u8; 32];
+            x.copy_from_slice(&secret);
+            assert!(Engine::scalar_ok(&x), "Bad secret");
+            assert!(Engine::mul_base(&x) == point_at(&t.keys, seat as usize), "Wrong secret");
+            let card = cipher_at(&t.residual, seat as usize);
+            let plain = Engine::sub(&card.c2, &Engine::mul(&card.c1, &x));
+            assert!(plain == st::card_point::<Engine>(CARD_WOLF), "That seat is no wolf");
+            t.wolf = seat;
+            emit_event("Danse.Unmasked", metadata! { "table" => table.to_string(), "seat" => seat.to_string() });
+        }
+
+        /// A winner takes their share as a bucket, and the same transaction turns it into a fresh
+        /// stealth output. The proof binds this transaction's seal key, so a copy of it is useless.
+        pub fn collect(&mut self, table: u64, seat: u8, proof: Bytes) -> Bucket {
             let t = self.table(table);
             assert!(t.phase == OVER && (seat as usize) < SEATS, "The game isn't over");
             assert!(t.winner == WINNER_VILLAGE || t.winner == WINNER_WOLF, "Nobody won");
+            assert!(t.wolf != u8::MAX, "The wolf has not unmasked");
             assert!(t.collected & (1 << seat) == 0, "Already collected");
-            assert!(t.antes[seat as usize] > 0, "No stake on this seat");
-            let wolf_won = t.winner == WINNER_WOLF;
-            let won = |i: usize| (i as u8 == t.wolf) == wolf_won;
-            assert!(won(seat as usize), "This seat lost");
-
-            let total: u64 = t.antes.iter().sum();
-            let winners = (0..SEATS).filter(|i| won(*i) && t.antes[*i] > 0).count() as u64;
-            let share = total / winners;
-            assert!(statement.inputs_statement.inputs.is_empty(), "A payout spends only the stakes");
-            assert!(statement.inputs_statement.revealed_amount == Amount::from(share), "Wrong amount");
-            assert!(statement.outputs_statement.revealed_output.is_none(), "A payout stays hidden");
-            assert!(statement.outputs_statement.outputs.len() == 1, "One output");
-
-            let commitment = *statement.outputs_statement.outputs[0].commitment();
-            let key = point_at(&t.keys, seat as usize);
-            let ctx = st::ctx(b"collect", table, 0, seat as u32, commitment.as_ref());
-            assert!(verify::<Engine>(&ctx, &st::key_statement(&key), &proof), "Bad collect proof");
+            assert!(t.staked & (1 << seat) != 0, "No stake on this seat");
+            assert!(seat_won(t, seat as usize), "This seat lost");
+            check_payout(t, table, seat, b"collect", &proof);
+            let winners = staked_winners(t);
+            let share = ANTE * t.staked.count_ones() as u64 / winners;
             t.collected |= 1 << seat;
-
-            let rest = self.stakes.withdraw(Amount::from(share)).stealth_transfer(statement);
-            rest.assert_contains_no_confidential_funds();
-            assert!(rest.amount().is_zero(), "Funds left over");
-            self.stakes.deposit(rest);
             emit_event("Danse.Collected", metadata! { "table" => table.to_string() });
+            self.stakes.withdraw(Amount::from(share))
+        }
+
+        /// Gives a stake back when the table stalled, or when no winning seat had staked.
+        pub fn refund(&mut self, table: u64, seat: u8, proof: Bytes) -> Bucket {
+            let t = self.table(table);
+            assert!(t.phase == OVER && (seat as usize) < SEATS, "The game isn't over");
+            assert!(t.collected & (1 << seat) == 0, "Already collected");
+            assert!(t.staked & (1 << seat) != 0, "No stake on this seat");
+            let void = t.winner == WINNER_STALLED || (t.wolf != u8::MAX && staked_winners(t) == 0);
+            assert!(void, "This table has a winner");
+            check_payout(t, table, seat, b"refund", &proof);
+            t.collected |= 1 << seat;
+            emit_event("Danse.Refunded", metadata! { "table" => table.to_string() });
+            self.stakes.withdraw(Amount::from(ANTE))
         }
 
         /// Anyone may close a table that has stalled for two epochs.
         pub fn close_stalled(&mut self, table: u64) {
             let t = self.table(table);
-            assert!(t.phase != OVER, "Already over");
+            let silent_wolf = t.phase == OVER && t.winner == WINNER_WOLF && t.wolf == u8::MAX;
+            assert!(t.phase != OVER || silent_wolf, "Already over");
             assert!(Consensus::current_epoch() >= t.stall_at, "Not stalled");
             finish(t, table, WINNER_STALLED);
         }
@@ -551,6 +588,16 @@ mod danse_macabre {
             self.pot.pay_fee(Amount::from(amount));
         }
 
+        fn count_open(&mut self) {
+            let now = Consensus::current_epoch();
+            if now != self.open_epoch {
+                self.open_epoch = now;
+                self.opens_this_epoch = 0;
+            }
+            assert!(self.opens_this_epoch < MAX_OPENS_PER_EPOCH, "Too many tables this epoch");
+            self.opens_this_epoch += 1;
+        }
+
         fn draw(&mut self, amount: u64) {
             assert!(amount <= MAX_TX_FEE, "Fee above the cap");
             if amount > 0 {
@@ -588,12 +635,41 @@ mod danse_macabre {
         /// Secrets of the dead, published on reveal. Zero until then.
         pub revealed: Bytes,
         pub ticket: Bytes,
-        /// Stake per seat, in µT.
-        pub antes: Vec<u64>,
+        /// Seats that staked, as a bitmask, and the key each named to claim with.
+        pub staked: u32,
+        pub payouts: Bytes,
         pub collected: u32,
         pub fee_nonce: u32,
         pub fees_used: u64,
         pub stall_at: u64,
+    }
+
+    fn seat_won(t: &Table, seat: usize) -> bool {
+        (seat as u8 == t.wolf) == (t.winner == WINNER_WOLF)
+    }
+
+    fn staked_winners(t: &Table) -> u64 {
+        (0..SEATS).filter(|i| seat_won(t, *i) && t.staked & (1 << i) != 0).count() as u64
+    }
+
+    /// True once every staked seat has had its money.
+    fn all_paid(t: &Table) -> bool {
+        if t.staked == 0 {
+            return true;
+        }
+        let owed = if staked_winners(t) == 0 || t.winner == WINNER_STALLED {
+            t.staked
+        } else {
+            (0..SEATS as u32).filter(|i| seat_won(t, *i as usize)).fold(0, |m, i| m | (1 << i)) & t.staked
+        };
+        t.collected & owed == owed
+    }
+
+    fn check_payout(t: &Table, table: u64, seat: u8, action: &[u8], proof: &Bytes) {
+        let key = point_at(&t.payouts, seat as usize);
+        let sealer = CallerContext::transaction_signer_public_key();
+        let ctx = st::ctx(action, table, 0, seat as u32, sealer.as_ref());
+        assert!(verify::<Engine>(&ctx, &st::key_statement(&key), proof), "Bad payout proof");
     }
 
     fn touch(t: &mut Table) {
@@ -648,6 +724,7 @@ mod danse_macabre {
     fn finish(t: &mut Table, table: u64, winner: u8) {
         t.phase = OVER;
         t.winner = winner;
+        touch(t);
         emit_event("Danse.Over", metadata! { "table" => table.to_string(), "winner" => winner.to_string() });
     }
 

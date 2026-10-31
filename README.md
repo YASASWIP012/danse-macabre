@@ -26,6 +26,6 @@ cargo test -p danse-client
 cd template && cargo test --release
 ```
 
-The second suite plays whole games on the real Ootle engine, in-process.
+The second suite plays whole games and every attack in `THREAT_MODEL.md` on the real Ootle engine, in-process.
 
 MIT licensed. Testnet only, not audited.

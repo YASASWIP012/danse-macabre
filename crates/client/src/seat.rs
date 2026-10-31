@@ -68,21 +68,41 @@ impl Seat {
         prove::<Native>(&ctx, &st::key_statement(&self.key), 0, &[self.secret], &mut rng())
     }
 
-    /// Authorises the game's fee pot to pay for one action of this seat.
-    pub fn fee_proof(&self, nonce: u32) -> Vec<u8> {
-        let ctx = st::ctx(b"fee", self.game, nonce, self.index, &[]);
+    /// Authorises the fee pot to pay for the transaction sealed by `sealer`.
+    pub fn fee_proof(&self, nonce: u32, sealer: &[u8]) -> Vec<u8> {
+        let ctx = st::ctx(b"fee", self.game, nonce, self.index, sealer);
         prove::<Native>(&ctx, &st::key_statement(&self.key), 0, &[self.secret], &mut rng())
     }
 
     /// Authorises the pot to pay for a join, from whoever holds the invite link.
-    pub fn ticket_proof(&self, nonce: u32) -> Vec<u8> {
-        let ctx = st::ctx(b"ticket", self.game, nonce, 0, &[]);
+    pub fn ticket_proof(&self, nonce: u32, sealer: &[u8]) -> Vec<u8> {
+        let ctx = st::ctx(b"ticket", self.game, nonce, 0, sealer);
         prove::<Native>(&ctx, &st::key_statement(&self.key), 0, &[self.secret], &mut rng())
     }
 
-    /// Claims a stake into the stealth output with this commitment.
-    pub fn collect_proof(&self, commitment: &[u8]) -> Vec<u8> {
-        let ctx = st::ctx(b"collect", self.game, 0, self.index, commitment);
+    /// Lets `key` sit in `seat`. The holder of the invite ticket makes this.
+    pub fn invite_proof(&self, seat: u32, key: &Pt) -> Vec<u8> {
+        let ctx = st::ctx(b"invite", self.game, 0, seat, key);
+        prove::<Native>(&ctx, &st::key_statement(&self.key), 0, &[self.secret], &mut rng())
+    }
+
+    /// Stakes on this seat, naming the separate key that will claim the money. The seat's own key
+    /// goes public if it dies, so it can't be the one that collects.
+    pub fn ante_proof(&self, payout_key: &Pt) -> Vec<u8> {
+        let ctx = st::ctx(b"ante", self.game, 0, self.index, payout_key);
+        prove::<Native>(&ctx, &st::key_statement(&self.key), 0, &[self.secret], &mut rng())
+    }
+
+    /// Signs one shuffle. Without this, anyone could shuffle for a seat with a known permutation.
+    pub fn shuffle_proof(&self, steps: &[u8]) -> Vec<u8> {
+        let ctx = st::ctx(b"shuffle-by", self.game, 0, self.index, &Native::hash_scalar(steps));
+        prove::<Native>(&ctx, &st::key_statement(&self.key), 0, &[self.secret], &mut rng())
+    }
+
+    /// Claims money with the payout key in the transaction sealed by `sealer`. `action` is
+    /// `collect` or `refund`.
+    pub fn payout_proof(&self, action: &[u8], sealer: &[u8]) -> Vec<u8> {
+        let ctx = st::ctx(action, self.game, 0, self.index, sealer);
         prove::<Native>(&ctx, &st::key_statement(&self.key), 0, &[self.secret], &mut rng())
     }
 
@@ -149,24 +169,23 @@ impl Seat {
         let pick = if wolf { pick } else { None };
         let (votes, randomness) = Self::one_hot(joint, seats, pick);
         let statement = st::night_statement::<Native>(joint, &self.key, residual, &votes, targets);
-        let (real, witnesses) = match pick {
-            None => (0, randomness),
-            Some(target) => {
-                let k = targets.iter().position(|t| *t == target).expect("pick must be a target");
-                let mut w = vec![self.secret];
-                w.extend(randomness);
-                (k + 1, w)
-            },
+        let real = match pick {
+            None => 0,
+            Some(target) => targets.iter().position(|t| *t == target).expect("pick must be a target") + 1,
         };
+        let mut witnesses = vec![self.secret];
+        witnesses.extend(randomness);
         let ctx = st::ctx(b"night", self.game, round, self.index, &[]);
         (votes.clone(), prove::<Native>(&ctx, &statement, real, &witnesses, &mut rng()))
     }
 
     pub fn vote(&self, round: u32, joint: &Pt, targets: &[usize], seats: usize, pick: usize) -> (Vec<Cipher>, Vec<u8>) {
         let (votes, randomness) = Self::one_hot(joint, seats, Some(pick));
-        let statement = st::vote_statement::<Native>(joint, &votes, targets);
+        let statement = st::vote_statement::<Native>(joint, &self.key, &votes, targets);
         let k = targets.iter().position(|t| *t == pick).expect("pick must be a target");
         let ctx = st::ctx(b"vote", self.game, round, self.index, &[]);
-        (votes.clone(), prove::<Native>(&ctx, &statement, k, &randomness, &mut rng()))
+        let mut witnesses = vec![self.secret];
+        witnesses.extend(randomness);
+        (votes.clone(), prove::<Native>(&ctx, &statement, k, &witnesses, &mut rng()))
     }
 }
