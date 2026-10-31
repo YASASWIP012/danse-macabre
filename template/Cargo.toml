@@ -1,0 +1,28 @@
+[workspace]
+
+[package]
+name = "danse_macabre"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Danse Macabre: Werewolf with no game master, on Tari Ootle"
+
+[dependencies]
+tari_template_lib = "0.35"
+shroud = { path = "../crates/shroud" }
+
+[dev-dependencies]
+tari_template_test_tooling = "0.47"
+tari_crypto = "=0.24.0"
+danse-client = { path = "../crates/client" }
+shroud = { path = "../crates/shroud", features = ["native"] }
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

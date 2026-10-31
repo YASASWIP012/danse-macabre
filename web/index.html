@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Danse Macabre</title>
+<meta name="description" content="Werewolf with no game master, on Tari. Nobody knows the deal, not even the host." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='15' fill='%230c0718'/><path d='M21 7a10 10 0 1 0 0 18 8 8 0 1 1 0-18z' fill='%23fbf7ef'/></svg>" />
+</head>
+<body>
+<header class="nav">
+  <a class="brand" href="#top"><span class="moon"></span>Danse Macabre</a>
+  <nav>
+    <a href="#how">How it works</a>
+    <a href="#seen">What the chain sees</a>
+    <a href="#proof">Proof</a>
+    <a href="https://github.com/YASASWIP012/danse-macabre">Code</a>
+  </nav>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <p class="eyebrow">Werewolf on Tari Ootle</p>
+    <h1>Someone at this table is the wolf.<br /><em>The table doesn't know who.</em></h1>
+    <p class="lede">Five players shuffle one wolf into the deck together, so nobody knows the deal, including whoever opened the game. There is no game master and no server. The contract checks every move without ever seeing a card.</p>
+    <div class="cta">
+      <button class="pill" id="play">Take a seat</button>
+      <a class="pill ghost" href="#how">How it works</a>
+    </div>
+    <p class="fine">No wallet needed. Esmeralda testnet. Four ghosts fill the empty seats.</p>
+  </section>
+
+  <section class="stage" id="table">
+    <div class="window">
+      <div class="chrome"><i></i><i></i><i></i><span id="crumb">Table not open yet</span></div>
+      <div class="room">
+        <div class="seats" id="seats"></div>
+        <div class="centre">
+          <p class="status" id="status">Press Take a seat to open a table on the testnet.</p>
+          <div class="choices" id="choices"></div>
+        </div>
+        <aside class="ledger">
+          <h3>On the chain</h3>
+          <ol id="log"></ol>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="how">
+    <p class="eyebrow">How it works</p>
+    <h2>A deal nobody can see, a death nobody can trace</h2>
+    <div class="grid">
+      <article><span>1</span><h3>Everyone shuffles</h3><p>Each seat re-encrypts the deck and reorders it through a network of ten switches. A proof shows every switch is honest: same cards, no extras, order unknown. One honest player is enough to keep the deal hidden from the rest.</p></article>
+      <article><span>2</span><h3>Each seat reads one card</h3><p>Every other seat removes its layer from your card, and proves it did. The last layer is yours alone, so only you can read it.</p></article>
+      <article><span>3</span><h3>Everyone acts at night</h3><p>Every living seat posts one sealed action of the same size. The wolf's names a victim. A villager's proves it names nobody. The contract can't tell them apart, and a villager can't forge a kill.</p></article>
+      <article><span>4</span><h3>Only the total opens</h3><p>The contract adds the sealed actions together and the seats open the sum. The village learns who died. Nobody learns who did it.</p></article>
+    </div>
+  </section>
+
+  <section class="band alt" id="seen">
+    <p class="eyebrow">What the chain sees</p>
+    <h2>Same five transactions, three views</h2>
+    <table class="views">
+      <thead><tr><th></th><th>A stranger</th><th>A villager</th><th>The wolf</th></tr></thead>
+      <tbody>
+        <tr><td>Who holds the wolf card</td><td>Hidden</td><td>Hidden</td><td>Knows only their own</td></tr>
+        <tr><td>Who acted for real at night</td><td>Hidden</td><td>Hidden</td><td>Knows only their own</td></tr>
+        <tr><td>Who died</td><td>Public</td><td>Public</td><td>Public</td></tr>
+        <tr><td>Which wallet sits in which seat</td><td>No wallet appears</td><td>No wallet appears</td><td>No wallet appears</td></tr>
+      </tbody>
+    </table>
+    <p class="note">Why Tari: on a public chain the account paying for a move is a clue. Here each move is sealed by a throwaway key and the table's fee pot pays, so no account ever touches a seat. Still public: that a table exists, the seats, the timing and the fees. In a solo game the four ghosts run in your own tab, so the privacy only means something between people. See the threat model.</p>
+  </section>
+
+  <section class="band" id="proof">
+    <p class="eyebrow">Proof</p>
+    <h2>Check it yourself</h2>
+    <ul class="links" id="proofs"></ul>
+  </section>
+</main>
+
+<footer class="foot">MIT licensed. Testnet only, not audited. Built for the Tari Spooky Secrets contest.</footer>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

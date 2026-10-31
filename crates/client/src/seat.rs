@@ -74,6 +74,12 @@ impl Seat {
         prove::<Native>(&ctx, &st::key_statement(&self.key), 0, &[self.secret], &mut rng())
     }
 
+    /// Authorises the pot to pay for a join, from whoever holds the invite link.
+    pub fn ticket_proof(&self, nonce: u32) -> Vec<u8> {
+        let ctx = st::ctx(b"ticket", self.game, nonce, 0, &[]);
+        prove::<Native>(&ctx, &st::key_statement(&self.key), 0, &[self.secret], &mut rng())
+    }
+
     pub fn shuffle(&self, deck: &[Cipher], joint: &Pt) -> Vec<ShuffleStep> {
         let n = deck.len();
         let mut destinations: Vec<usize> = (0..n).collect();
