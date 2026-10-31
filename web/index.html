@@ -17,11 +17,13 @@
     <a href="#seen">What the chain sees</a>
     <a href="#proof">Proof</a>
     <a href="https://github.com/YASASWIP012/danse-macabre">Code</a>
+    <button class="mute" id="mute" aria-label="Turn sound off">Sound on</button>
   </nav>
 </header>
 
 <main id="top">
   <section class="hero">
+    <div class="fan" aria-hidden="true"><img src="/art/card-villager.svg" alt="" /><img src="/art/card-wolf.svg" alt="" /><img src="/art/card-back.svg" alt="" /></div>
     <p class="eyebrow">Werewolf where the game keeps the secret</p>
     <h1>Someone at this table is the wolf.<br /><em>The table doesn't know who.</em></h1>
     <p class="lede">Nobody deals. Nobody narrates. Five players shuffle one wolf into the deck together, and even the host can't see who drew it. Each night someone dies, and nobody can trace who did it.</p>
@@ -39,11 +41,14 @@
       <div class="room" id="room">
         <div class="seats" id="seats"></div>
         <div class="centre">
+          <p class="chatter" id="chatter"></p>
           <p class="status" id="status">Press Play now to open a table.</p>
           <div class="choices" id="choices"></div>
           <div class="result" id="result" hidden></div>
         </div>
         <aside class="ledger">
+          <h3>What a stranger sees</h3>
+          <ol class="stranger" id="stranger"><li>No table yet.</li></ol>
           <h3>On the chain</h3>
           <ol id="log"></ol>
         </aside>

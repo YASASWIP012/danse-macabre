@@ -3,6 +3,7 @@ import init, * as w from "./wasm/danse_client";
 import { findTable, hex, int, readTable, send, tablesOpened, type TableState } from "./chain";
 import { CARD_WOLF, PHASE, act, cardOf, isAlive, joinSeats, living, unmask, type Choices, type Seat } from "./game";
 import { ANTE, EXPLORER, SEATS } from "./net";
+import { bell, flipSound, howl, toggleSound } from "./sound";
 import { claim, connectWallet, stake } from "./stake";
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -37,6 +38,24 @@ function log(text: string, tx?: string) {
 let shownCard = 0;
 let shownDead = 31;
 
+/** Everything here comes from the table's public state, the same bytes anyone can read. */
+function drawStranger(t: TableState) {
+  const rows = [0, 1, 2, 3, 4].map((i) => {
+    const li = document.createElement("li");
+    const card = t.deck.slice(i * 128, i * 128 + 12);
+    const label = document.createElement("b");
+    label.textContent = `Seat ${i + 1}`;
+    const face = document.createElement("span");
+    const dead = !isAlive(t, i);
+    face.textContent = dead ? (t.wolf === i ? "dead, wolf" : "dead, villager") : card ? `card ${card}…` : "joining";
+    const moved = document.createElement("span");
+    moved.textContent = !dead && t.acted & (1 << i) ? "sealed" : "";
+    li.append(label, face, moved);
+    return li;
+  });
+  $("stranger").replaceChildren(...rows);
+}
+
 function setTime(t?: TableState) {
   const night = t && (t.phase === PHASE.NIGHT || t.phase === PHASE.SHUFFLE || t.phase === PHASE.DEAL);
   const dawn = t && (t.phase === PHASE.NIGHT_OPEN || t.phase === PHASE.REVEAL);
@@ -45,8 +64,12 @@ function setTime(t?: TableState) {
 
 function drawSeats(t?: TableState) {
   setTime(t);
+  if (t) drawStranger(t);
   const flipMine = myCard !== 0 && shownCard === 0;
-  if (flipMine) shownCard = myCard;
+  if (flipMine) {
+    shownCard = myCard;
+    flipSound();
+  }
   const justDied = t ? shownDead & ~t.alive : 0;
   if (t) shownDead = t.alive;
   $("seats").replaceChildren(
@@ -84,6 +107,9 @@ function ask(prompt: string, options: number[]): Promise<number> {
   });
 }
 
+const NIGHT_TALK = ["Doors are barred across the village.", "Someone is walking the churchyard.", "The dogs have stopped barking.", "A lamp goes out across the square."];
+const DAY_TALK = ["Found at first light. The door was locked from inside.", "Nobody heard a thing. Nobody will say they did.", "They carry the body up the hill, and no one looks at anyone."];
+const talk = (line: string) => ($("chatter").textContent = line);
 const pickRandom = <T,>(list: T[]) => list[Math.floor(Math.random() * list.length)];
 const seat = (index: number): Seat => ({ index, secret: w.new_secret() });
 
@@ -243,6 +269,8 @@ async function play() {
       say(t.winner === 1 ? "The wolf is dead. The village wins." : t.winner === 2 ? "Only two remain. The wolf wins." : "The table stalled and closed.");
       if (t.wolf !== 255) log(`${name(t.wolf)} held the wolf.`);
       showResult(t);
+      talk("");
+      bell(1);
       await settle(t);
       return;
     }
@@ -250,6 +278,8 @@ async function play() {
     if (t.phase === PHASE.REVEAL && announced !== key) {
       announced = key;
       say(`${name(t.turn)} ${t.turn === me ? "are" : "is"} dead.`);
+      if (t.afterReveal === PHASE.DAY) talk(pickRandom(DAY_TALK));
+      bell(t.round === 1 ? 2 : 3);
       await wait(1500);
     }
 
@@ -266,13 +296,23 @@ async function play() {
         await wait(1000 + Math.random() * 4000);
       }
       if (wolf && wolf !== mine) choices.kill = pickRandom(living(t).filter((i) => i !== wolf.index));
-      if (announced !== key) say("Night falls. Every living seat posts one sealed action. Only one of them means anything.");
+      if (announced !== key) {
+        say("Night falls. Every living seat posts one sealed action. Only one of them means anything.");
+        talk(pickRandom(NIGHT_TALK));
+        howl();
+      }
       announced = key;
     }
     if (t.phase === PHASE.DAY) {
       const votes = new Map<number, number>();
       if (mine && isAlive(t, me) && !(t.acted & (1 << me))) votes.set(me, await ask("Who do you accuse?", others));
-      for (const g of ghosts) if (isAlive(t, g.index)) votes.set(g.index, pickRandom(living(t).filter((i) => i !== g.index)));
+      // Ghosts talk it over and mostly pile onto one name, as a frightened village does.
+      const suspect = pickRandom(living(t));
+      for (const g of ghosts) {
+        if (!isAlive(t, g.index)) continue;
+        const others = living(t).filter((i) => i !== g.index);
+        votes.set(g.index, others.includes(suspect) && Math.random() < 0.8 ? suspect : pickRandom(others));
+      }
       choices.votes = votes;
       if (announced !== key) say("The village votes in secret.");
       announced = key;
@@ -391,6 +431,7 @@ function clearTable() {
   shownDead = 31;
   payoutSecret = null;
   $("result").hidden = true;
+  $("chatter").textContent = "";
   $("log").replaceChildren();
   $("choices").replaceChildren();
 }
@@ -427,6 +468,11 @@ async function start() {
     .then((n) => ($("count").textContent = `${n} tables opened so far.`))
     .catch(() => undefined);
   $("stakebox").hidden = !new URLSearchParams(location.search).has("stake");
+  $("mute").addEventListener("click", () => {
+    const on = toggleSound();
+    $("mute").textContent = on ? "Sound on" : "Sound off";
+    $("mute").setAttribute("aria-label", on ? "Turn sound off" : "Turn sound on");
+  });
   $("play").addEventListener("click", () => {
     clearTable();
     return guarded(solo);
