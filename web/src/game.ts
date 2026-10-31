@@ -29,15 +29,37 @@ export interface Choices {
   votes?: Map<number, number>;
 }
 
+const SWITCH_HEX = (128 + 192) * 2;
+
+/** The deck after a shuffle: each switch writes its two outputs back to its two wires. */
+function applySwitches(deck: string, steps: string): string {
+  const wires = [...Array(SEATS).keys()].map((i) => cut(deck, 64, i));
+  let index = 0;
+  for (let round = 0; round < SEATS - 1; round++) {
+    for (let wire = 0; wire < SEATS - 1 - round; wire++) {
+      const step = steps.slice(index * SWITCH_HEX, (index + 1) * SWITCH_HEX);
+      wires[wire] = step.slice(0, 128);
+      wires[wire + 1] = step.slice(128, 256);
+      index++;
+    }
+  }
+  return wires.join("");
+}
+
 function calls(t: TableState, seats: Seat[], choices: Choices): Call[] {
   const out: Call[] = [];
   const table = t.id;
   switch (t.phase) {
     case PHASE.SHUFFLE: {
-      const seat = seats.find((s) => s.index === t.turn);
-      if (!seat) break;
-      const steps = w.shuffle(table, seat.index, seat.secret, t.deck, t.joint);
-      out.push({ method: "shuffle", args: [int(table), int(seat.index), hex(steps)] });
+      // Every seat held in this tab shuffles in turn, so the whole deal fits one transaction.
+      let deck = t.deck;
+      for (let turn = t.turn; turn < SEATS; turn++) {
+        const seat = seats.find((s) => s.index === turn);
+        if (!seat) break;
+        const steps = w.shuffle(table, seat.index, seat.secret, deck, t.joint);
+        out.push({ method: "shuffle", args: [int(table), int(seat.index), hex(steps)] });
+        deck = applySwitches(deck, steps);
+      }
       break;
     }
     case PHASE.DEAL:

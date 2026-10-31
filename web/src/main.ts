@@ -41,7 +41,7 @@ function drawSeats(t?: TableState) {
         el.classList.toggle("acted", (t.acted & (1 << i)) !== 0);
       }
       const faceUp = i === YOU && myCard ? (myCard === CARD_WOLF ? "wolf" : "villager") : t && !isAlive(t, i) ? (t.wolf === i ? "wolf" : "villager") : "back";
-      el.style.backgroundImage = `url(/art/card-${faceUp}.png)`;
+      el.style.backgroundImage = `url(/art/card-${faceUp}.svg)`;
       el.innerHTML = `<small>Seat ${i + 1}</small><span class="name">${name(i)}</span>`;
       return el;
     }),
@@ -90,7 +90,7 @@ async function openTable() {
 }
 
 const LINES: Record<number, string> = {
-  [PHASE.SHUFFLE]: "Seat shuffles the deck, with a proof for every switch",
+  [PHASE.SHUFFLE]: "All five seats shuffle, with a proof for every switch",
   [PHASE.DEAL]: "Every seat strips its layer from the others' cards",
   [PHASE.NIGHT]: "Five sealed actions of the same size",
   [PHASE.NIGHT_OPEN]: "The night's total opens",
@@ -136,7 +136,7 @@ async function run() {
       choices.votes = votes;
       say("The village votes in secret.");
     }
-    if (t.phase === PHASE.SHUFFLE) say(`${name(t.turn)} shuffles.`);
+    if (t.phase === PHASE.SHUFFLE) say("Five seats shuffle one wolf into the deck. Nobody sees the order.");
     if (t.phase === PHASE.DEAL) say("Each seat strips its layer. Five cards, five owners.");
 
     await wait(30);
