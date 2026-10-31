@@ -693,3 +693,55 @@ fn a_join_needs_the_ticket() {
     let wrong = Seat::new(t, 0).invite_proof(0, &s.key);
     w.refused("join", args![t, 0u8, b(s.key.to_vec()), b(s.join_proof()), b(wrong)], "Bad invite");
 }
+
+fn set_epoch(w: &mut World, epoch: u64) {
+    use tari_template_test_tooling::engine_types::virtual_substate::{VirtualSubstate, VirtualSubstateId};
+    w.test.set_virtual_substate(VirtualSubstateId::CurrentEpoch, VirtualSubstate::CurrentEpoch(epoch));
+}
+
+#[test]
+fn a_dead_seat_cannot_authorise_fees() {
+    let mut w = world();
+    let wolf = w.ready();
+    let victim = (wolf + 1) % N;
+    w.night(victim);
+    w.open();
+    w.reveal();
+    let t = w.table;
+    let (stranger, public) = sealer(&mut w, 230);
+    let proof = w.seats[victim].fee_proof(0, &public);
+    let tx = w.test.transaction()
+        .with_fee_instructions_builder(|f| f.call_method(w.game, "pay_seat_fee", args![t, victim as u8, b_(proof), 1_000_000u64]))
+        .call_method(w.game, "pot_balance", args![])
+        .finish().seal(&stranger);
+    let refused = w.test.try_execute(tx, vec![]).map(|r| r.finalize.result.any_accept().is_none()).unwrap_or(true);
+    assert!(refused);
+}
+
+#[test]
+fn the_seat_that_stalls_forfeits_and_the_rest_are_refunded() {
+    let mut w = world();
+    w.join_all();
+    let keys: Vec<Seat> = (0..N).map(|s| stake(&mut w, s)).collect();
+    w.shuffle_all();
+    // Four seats deal. The fifth has read nothing it needs, and walks away.
+    let deck = ciphers(&w.state().deck);
+    for s in w.seats.clone().into_iter().take(N - 1) {
+        let bases: Vec<Pt> = (0..N).filter(|i| *i != s.index as usize).map(|i| deck[i].c1).collect();
+        let (shares, proof) = s.shares(b"deal", 0, &bases);
+        let t = w.table;
+        w.ok("deal", args![t, s.index as u8, b(shares.concat()), b(proof)]);
+    }
+    let t = w.table;
+    w.refused("close_stalled", args![t], "Not stalled");
+    set_epoch(&mut w, 100);
+    w.ok("close_stalled", args![t]);
+    let (key, public) = sealer(&mut w, 231);
+    let proof = keys[N - 1].payout_proof(b"refund", &public);
+    let tx = claim_tx(&w, "refund", N - 1, proof, danse_macabre::ANTE, &key);
+    let why = format!("{:?}", w.test.execute_expect_failure(tx, vec![]));
+    assert!(why.contains("This seat stalled the table"), "{why}");
+    let proof = keys[0].payout_proof(b"refund", &public);
+    let tx = claim_tx(&w, "refund", 0, proof, danse_macabre::ANTE, &key);
+    w.test.execute_expect_success(tx, vec![]);
+}

@@ -216,6 +216,45 @@ export function night(game, index, secret, round, joint, residual, targets, seat
  * @param {bigint} game
  * @param {number} index
  * @param {string} secret
+ * @param {number} nonce
+ * @param {string} sealer
+ * @returns {string}
+ */
+export function payout_fee_proof(game, index, secret, nonce, sealer) {
+    let deferred6_0;
+    let deferred6_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+        const val3 = BigInt.asIntN(64, game);
+        const val4 = +index;
+        const val5 = +nonce;
+        let ptr0, len0, ptr1, len1;
+        try {
+            ptr0 = passStringToWasm0(secret, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            len0 = WASM_VECTOR_LEN;
+            ptr1 = passStringToWasm0(sealer, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            len1 = WASM_VECTOR_LEN;
+        } catch (e) {
+            if (ptr1) { wasm.__wbindgen_export5(ptr1, len1 * 1, 1); }
+            if (ptr0) { wasm.__wbindgen_export5(ptr0, len0 * 1, 1); }
+            throw e;
+        }
+        wasm.payout_fee_proof(retptr, val3, val4, ptr0, len0, val5, ptr1, len1);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        deferred6_0 = r0;
+        deferred6_1 = r1;
+        return getStringFromWasm0(r0, r1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export5(deferred6_0, deferred6_1, 1);
+    }
+}
+
+/**
+ * @param {bigint} game
+ * @param {number} index
+ * @param {string} secret
  * @param {string} action
  * @param {string} sealer
  * @returns {string}

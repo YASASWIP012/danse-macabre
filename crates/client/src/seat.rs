@@ -99,6 +99,12 @@ impl Seat {
         prove::<Native>(&ctx, &st::key_statement(&self.key), 0, &[self.secret], &mut rng())
     }
 
+    /// Lets the pot pay for a claim, signed by the payout key.
+    pub fn payout_fee_proof(&self, nonce: u32, sealer: &[u8]) -> Vec<u8> {
+        let ctx = st::ctx(b"payout-fee", self.game, nonce, self.index, sealer);
+        prove::<Native>(&ctx, &st::key_statement(&self.key), 0, &[self.secret], &mut rng())
+    }
+
     /// Claims money with the payout key in the transaction sealed by `sealer`. `action` is
     /// `collect` or `refund`.
     pub fn payout_proof(&self, action: &[u8], sealer: &[u8]) -> Vec<u8> {

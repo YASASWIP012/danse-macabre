@@ -668,6 +668,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tari_crypto",
+ "tari_ootle_common_types",
  "tari_ootle_transaction",
  "tokio",
 ]

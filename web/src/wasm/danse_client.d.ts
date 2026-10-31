@@ -16,6 +16,8 @@ export function new_secret(): string;
  */
 export function night(game: bigint, index: number, secret: string, round: number, joint: string, residual: string, targets: Uint32Array | number[], seats: number, pick: number): string;
 
+export function payout_fee_proof(game: bigint, index: number, secret: string, nonce: number, sealer: string): string;
+
 export function payout_proof(game: bigint, index: number, secret: string, action: string, sealer: string): string;
 
 export function public_key(secret: string): string;
@@ -51,6 +53,7 @@ export interface InitOutput {
     readonly join_proof: (a: number, b: bigint, c: number, d: number, e: number) => void;
     readonly new_secret: (a: number) => void;
     readonly night: (a: number, b: bigint, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => void;
+    readonly payout_fee_proof: (a: number, b: bigint, c: number, d: number, e: number, f: number, g: number, h: number) => void;
     readonly payout_proof: (a: number, b: bigint, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
     readonly public_key: (a: number, b: number, c: number) => void;
     readonly read_card: (a: bigint, b: number, c: number, d: number, e: number, f: number) => number;

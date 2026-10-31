@@ -109,8 +109,11 @@ function calls(t: TableState, seats: Seat[], choices: Choices): Call[] {
 export async function act(t: TableState, seats: Seat[], choices: Choices = {}) {
   const list = calls(t, seats, choices);
   if (!list.length) return null;
-  const payer = seats.find((s) => isAlive(t, s.index) || t.turn === s.index) ?? seats[0];
-  const proof = (sealer: string) => w.fee_proof(t.id, payer.index, payer.secret, t.feeNonce, sealer);
+  const payer = seats.find((s) => isAlive(t, s.index));
+  if (!payer) return null;
+  // Someone else may have moved while this tab was proving, so take the nonce as late as possible.
+  const nonce = (await readTable(t.id))?.feeNonce ?? t.feeNonce;
+  const proof = (sealer: string) => w.fee_proof(t.id, payer.index, payer.secret, nonce, sealer);
   return send({ kind: "seat", table: t.id, seat: payer.index, proof }, list);
 }
 

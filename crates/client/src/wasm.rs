@@ -66,6 +66,11 @@ pub fn ticket_proof(game: u64, secret: &str, nonce: u32, sealer: &str) -> String
 }
 
 #[wasm_bindgen]
+pub fn payout_fee_proof(game: u64, index: u32, secret: &str, nonce: u32, sealer: &str) -> String {
+    hex::encode(seat(game, index, secret).payout_fee_proof(nonce, &pt(sealer)))
+}
+
+#[wasm_bindgen]
 pub fn invite_proof(game: u64, ticket: &str, index: u32, key: &str) -> String {
     hex::encode(seat(game, 0, ticket).invite_proof(index, &pt(key)))
 }

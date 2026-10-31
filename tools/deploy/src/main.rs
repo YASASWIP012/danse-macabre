@@ -12,12 +12,13 @@ use ootle_rs::{
     default_indexer_url,
     key_provider::PrivateKeyProvider,
     keys::OotleSecretKey,
-    provider::{PendingTransaction, Provider, ProviderBuilder, WalletProvider},
+    provider::{Provider, ProviderBuilder, WalletProvider},
     stealth::{Output, StealthTransfer},
     template_types::{
         constants::{TARI, TARI_TOKEN},
         crypto::PedersenCommitmentBytes,
         EncryptedData,
+        Hash32,
         UtxoAddress,
     },
     wallet::{NetworkWallet, OotleWallet},
@@ -74,15 +75,20 @@ async fn main() {
             let commitment = hex::decode(argv.next().expect("input commitment")).unwrap();
             let value: u64 = argv.next().expect("input value").parse().unwrap();
             let commitment = PedersenCommitmentBytes::try_from(commitment.as_slice()).unwrap();
-            let left = NonZeroU64::new(value - FEE_BUDGET).unwrap();
+            // Splits the claim into a fee coin and a pot coin for the `open` step.
+            let pot = 4000 * TARI;
+            let left = NonZeroU64::new(value - FEE_BUDGET - pot).unwrap();
             let (fee, signers) = StealthTransfer::new(TARI_TOKEN, &provider)
                 .spend_stealth_input(me.clone(), commitment)
                 .to_revealed_output(FEE_BUDGET)
                 .to_stealth_output(Output::new(me.clone(), TARI_TOKEN, left))
+                .to_stealth_output(Output::new(me.clone(), TARI_TOKEN, NonZeroU64::new(pot).unwrap()))
                 .prepare()
                 .await
                 .unwrap();
-            println!("change {}", hex::encode(fee.stealth_outputs()[0].commitment().as_ref()));
+            for output in fee.stealth_outputs() {
+                println!("output {}", hex::encode(output.commitment().as_ref()));
+            }
             let unsigned = Transaction::builder(provider.network(), max_epoch)
                 .with_fee_instructions_builder(|b| {
                     b.stealth_transfer(TARI_TOKEN, fee)
@@ -98,6 +104,47 @@ async fn main() {
             let pending = provider.send_transaction(tx).await.expect("submit");
             println!("publish tx {}", pending.tx_id());
             println!("{:?}", pending.watch().await.expect("publish"));
+        },
+        "open" => {
+            // Input A pays the fee, input B fills the pot.
+            let raw = hex::decode(argv.next().expect("template hex")).unwrap();
+            let template = Hash32::try_from(raw.as_slice()).unwrap();
+            let a = PedersenCommitmentBytes::try_from(hex::decode(argv.next().unwrap()).unwrap().as_slice()).unwrap();
+            let a_value: u64 = argv.next().unwrap().parse().unwrap();
+            let b = PedersenCommitmentBytes::try_from(hex::decode(argv.next().unwrap()).unwrap().as_slice()).unwrap();
+            let pot: u64 = argv.next().unwrap().parse().unwrap();
+            let left = NonZeroU64::new(a_value - FEE_BUDGET).unwrap();
+            let (fee, fee_signers) = StealthTransfer::new(TARI_TOKEN, &provider)
+                .spend_stealth_input(me.clone(), a)
+                .to_revealed_output(FEE_BUDGET)
+                .to_stealth_output(Output::new(me.clone(), TARI_TOKEN, left))
+                .prepare()
+                .await
+                .unwrap();
+            let (main, main_signers) = StealthTransfer::new(TARI_TOKEN, &provider)
+                .spend_stealth_input(me.clone(), b)
+                .to_revealed_output(pot)
+                .prepare()
+                .await
+                .unwrap();
+            let unsigned = Transaction::builder(provider.network(), max_epoch)
+                .with_fee_instructions_builder(|f| {
+                    f.stealth_transfer(TARI_TOKEN, fee)
+                        .put_last_instruction_output_on_workspace("fees")
+                        .pay_fee_from_bucket("fees")
+                })
+                .stealth_transfer(TARI_TOKEN, main)
+                .put_last_instruction_output_on_workspace("pot")
+                .call_function(template, "new", args![Workspace("pot")])
+                .add_input(TARI_TOKEN)
+                .add_input(UtxoAddress::new(TARI_TOKEN, a.into()))
+                .add_input(UtxoAddress::new(TARI_TOKEN, b.into()))
+                .build_unsigned();
+            let authorizer = provider.wallet().stealth_authorizer(fee_signers.merge(main_signers));
+            let tx = TransactionRequest::default().with_transaction(unsigned).build(&authorizer).await.unwrap();
+            let pending = provider.send_transaction(tx).await.expect("submit");
+            println!("open tx {}", pending.tx_id());
+            println!("{:?}", pending.watch().await.expect("open"));
         },
         other => panic!("unknown command {other}"),
     }

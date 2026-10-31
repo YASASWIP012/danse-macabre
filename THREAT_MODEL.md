@@ -37,16 +37,19 @@ Every row has a test that plays the attack on the real Ootle engine and checks t
 | Copying a payout claim to redirect the money | The claim binds the transaction's seal key | `stakes_pay_the_winners_and_only_once` |
 | Taking a dead seat's winnings with its published secret | Stakes name a separate payout key | `a_dead_seats_public_secret_cannot_take_its_payout` |
 | A villager claiming a wolf win | Unmasking checks the card under the seat's secret | `a_surviving_wolf_unmasks_and_collects` |
+| Using a dead seat's public secret to spend the pot | Dead seats can't authorise fees | `a_dead_seat_cannot_authorise_fees` |
+| Reading your card and walking away from a bad hand | The seat the table is waiting on forfeits | `the_seat_that_stalls_forfeits_and_the_rest_are_refunded` |
 | Staking after reading your card | Stakes close before the deal | `stakes_close_before_the_deal` |
 
 The first version of this template had no key check on shuffles, night actions or votes. An independent review found that, and the rows above come from it.
 
 ## Known limits
 
-- **Stalling.** All seats must take part, so one closed tab stops the game. Anyone can close the table between 48 and 96 minutes after its last move, and every stake goes back to its owner. A player who stalls loses nothing, so a losing wolf can refuse to reveal and turn a loss into a refund.
+- **Stalling.** All seats must take part, so one closed tab stops the game. Anyone can close the table between 48 and 96 minutes after its last move. Stakes go back to their owners, except for the seats the table was waiting on, which forfeit.
 - **Last to open sees first.** The last seat to post a share can work out the total a moment early. It can stall, as above, but it can't change the result.
 - **Timing.** Every player picks a name at night and the client waits a random moment, so a wolf who deliberates looks like a villager who does the same. A player using their own client could still leak through timing.
 - **Provable cards.** A player can prove their own card to someone else. Flipping your card over at a real table works the same way, so this is a house rule.
-- **Solo play.** The four ghosts run in your own tab, and you could read their cards. The privacy only means something between separate people.
-- **Fee pot.** Tables that may open per epoch are capped and each table has a fee budget. A determined stranger could still burn through the epoch cap on purpose.
+- **Ghosts.** Ghosts run in the tab of whoever started the game, so that player could read their cards. The privacy only means something between separate people, and a group game with ghosts in it trusts the host about them.
+- **Rounding.** When winners split stakes unevenly, up to a few µT stay in the vault.
+- **Fee pot.** Tables per epoch are capped, each table has a fee budget, and a ticket pays for five transactions at most. A determined stranger could still use up the epoch cap, and nobody could open a table from the pot until the next epoch.
 - **Stake unlinking is only as good as the coin.** A stake comes from a stealth output, and that output's own history still links to whatever funded it.

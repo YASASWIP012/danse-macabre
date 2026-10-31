@@ -7,6 +7,7 @@ export const invite_proof: (a: number, b: bigint, c: number, d: number, e: numbe
 export const join_proof: (a: number, b: bigint, c: number, d: number, e: number) => void;
 export const new_secret: (a: number) => void;
 export const night: (a: number, b: bigint, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => void;
+export const payout_fee_proof: (a: number, b: bigint, c: number, d: number, e: number, f: number, g: number, h: number) => void;
 export const payout_proof: (a: number, b: bigint, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
 export const public_key: (a: number, b: number, c: number) => void;
 export const read_card: (a: bigint, b: number, c: number, d: number, e: number, f: number) => number;

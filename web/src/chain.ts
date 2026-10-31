@@ -7,7 +7,8 @@ import { COMPONENT, INDEXER, MAX_FEE } from "./net";
 export type Fee =
   | { kind: "open" }
   | { kind: "ticket"; table: bigint; proof: (sealer: string) => string }
-  | { kind: "seat"; table: bigint; seat: number; proof: (sealer: string) => string };
+  | { kind: "seat"; table: bigint; seat: number; proof: (sealer: string) => string }
+  | { kind: "payout"; table: bigint; seat: number; proof: (sealer: string) => string };
 
 export interface Call {
   method: string;
@@ -27,6 +28,8 @@ function feeCall(fee: Fee, sealer: string): Call {
       return { method: "pay_open_fee", args: [int(MAX_FEE)] };
     case "ticket":
       return { method: "pay_ticket_fee", args: [int(fee.table), hex(fee.proof(sealer)), int(MAX_FEE)] };
+    case "payout":
+      return { method: "pay_payout_fee", args: [int(fee.table), int(fee.seat), hex(fee.proof(sealer)), int(MAX_FEE)] };
     case "seat":
       return { method: "pay_seat_fee", args: [int(fee.table), int(fee.seat), hex(fee.proof(sealer)), int(MAX_FEE)] };
   }
@@ -58,8 +61,8 @@ export async function send(fee: Fee, calls: Call[] | ((sealer: string) => Call[]
   const pending = p.watchTransactionSSE(id);
   await pending.watch();
   const receipt: any = await pending.getReceipt();
-  const decision = receipt?.result?.Finalized?.final_decision;
-  if (decision && decision !== "Commit") throw new Error(`Refused: ${JSON.stringify(receipt).slice(0, 300)}`);
+  const verdict = JSON.stringify(receipt?.result?.Finalized ?? {}, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
+  if (/AcceptFeeRejectRest|FeeIntentCommit|"Reject"|"Abort"|ExecutionFailure/.test(verdict)) throw new Error(`Refused: ${verdict.slice(0, 400)}`);
   return { id: String(id), ms: performance.now() - started };
 }
 
@@ -82,6 +85,7 @@ export interface TableState {
   tally: string;
   feeNonce: number;
   staked: number;
+  collected: number;
 }
 
 const hexOf = (v: any): string => {
@@ -122,13 +126,20 @@ export async function readTable(id: bigint): Promise<TableState | null> {
     residual: hexOf(f("residual", 14)),
     tally: hexOf(f("tally", 15)),
     staked: Number(f("staked", 19)),
+    collected: Number(f("collected", 21)),
     feeNonce: Number(f("fee_nonce", 22)),
   };
 }
 
-export async function nextTableId(): Promise<bigint> {
+/** Finds the table opened with this ticket, which is how a tab learns its own table's id. */
+export async function findTable(ticketKey: string): Promise<bigint | null> {
   const r = await fetch(`${INDEXER}/substates/${COMPONENT}`, { cache: "no-store" });
   const j = await r.json();
   const state = (j?.substate ?? j?.state?.up?.substate)?.Component?.body?.state;
-  return BigInt(Array.isArray(state) ? state[1] : state?.next_table);
+  const tables = Array.isArray(state) ? state[0] : state?.tables;
+  for (const entry of Array.isArray(tables) ? tables : Object.entries(tables ?? {})) {
+    const t = (entry as any[])[1];
+    if (hexOf(Array.isArray(t) ? t[18] : t.ticket) === ticketKey) return BigInt((entry as any[])[0]);
+  }
+  return null;
 }

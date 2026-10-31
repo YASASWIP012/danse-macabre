@@ -23,6 +23,7 @@ h3{font-size:16px;font-weight:600;margin:0 0 6px}
 .hero{width:min(960px,calc(100% - 32px));margin:0 auto;padding:clamp(64px,10vw,120px) 0 48px;text-align:center}
 .lede{max-width:40em;margin:24px auto 0;font-size:clamp(17px,2vw,20px);color:var(--ink-2)}
 .cta{display:flex;justify-content:center;flex-wrap:wrap;gap:12px;margin-top:32px}
+.stakebox{display:inline-flex;align-items:center;gap:8px;margin-top:18px;font-size:14px;color:var(--ink-2);cursor:pointer}.stakebox input{accent-color:var(--accent)}
 .fine{margin:16px 0 0;font-size:13px;color:var(--ink-4)}
 .pill{display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:0 24px;border:0;border-radius:999px;background:linear-gradient(180deg,var(--accent-hi),var(--accent));color:#fff;font:600 15px var(--body);text-decoration:none;cursor:pointer;box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 8px 24px -8px var(--accent);transition:transform .12s var(--spring),filter .2s}
 .pill:hover{filter:brightness(1.1)}.pill:active{transform:scale(.97)}.pill:disabled{opacity:.5;cursor:default;filter:none;transform:none}

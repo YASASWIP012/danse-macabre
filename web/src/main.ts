@@ -1,8 +1,9 @@
 import "./style.css";
 import init, * as w from "./wasm/danse_client";
-import { hex, int, nextTableId, readTable, send, type TableState } from "./chain";
+import { findTable, hex, int, readTable, send, type TableState } from "./chain";
 import { CARD_WOLF, PHASE, act, cardOf, isAlive, joinSeats, living, unmask, type Choices, type Seat } from "./game";
-import { EXPLORER, SEATS } from "./net";
+import { ANTE, EXPLORER, SEATS } from "./net";
+import { claim, connectWallet, stake } from "./stake";
 
 const $ = (id: string) => document.getElementById(id)!;
 const NAMES = ["The Widow", "The Sexton", "The Miller", "The Bellringer", "The Gravedigger"];
@@ -12,6 +13,8 @@ let ghosts: Seat[] = []; // seats this tab plays for
 let mine: Seat | null = null;
 let table: bigint | null = null;
 let myCard = 0;
+let walletAddress: string | null = null;
+let payoutSecret: string | null = null;
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const say = (text: string) => ($("status").textContent = text);
@@ -69,22 +72,49 @@ function ask(prompt: string, options: number[]): Promise<number> {
 const pickRandom = <T,>(list: T[]) => list[Math.floor(Math.random() * list.length)];
 const seat = (index: number): Seat => ({ index, secret: w.new_secret() });
 
+/** What a tab must keep to come back to its table after a refresh. */
+interface Saved {
+  table: string;
+  me: number;
+  mine: Seat | null;
+  ghosts: Seat[];
+  wallet: string | null;
+  payout: string | null;
+}
+const SAVE_KEY = "danse-macabre/table";
+
+function save() {
+  try {
+    const saved: Saved = { table: String(table), me, mine, ghosts, wallet: walletAddress, payout: payoutSecret };
+    localStorage.setItem(SAVE_KEY, JSON.stringify(saved));
+  } catch {
+    // A private window has no storage, and the game still plays without it.
+  }
+}
+
+function restore(): Saved | null {
+  try {
+    const text = localStorage.getItem(SAVE_KEY);
+    return text ? (JSON.parse(text) as Saved) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Opens an empty table and returns its invite ticket. */
 async function openTable(): Promise<string> {
   say("Opening a table on the testnet…");
   const ticket = w.new_secret();
-  for (let attempt = 0; ; attempt++) {
-    table = await nextTableId();
-    try {
-      const sent = await send({ kind: "open" }, [{ method: "open_table", args: [hex(w.public_key(ticket)), int(0)] }]);
-      log("Table opened", sent.id);
-      $("crumb").textContent = `Table ${table}`;
-      return ticket;
-    } catch (e) {
-      if (attempt === 3) throw e;
-      await wait(1500);
-    }
+  const key = w.public_key(ticket);
+  const sent = await send({ kind: "open" }, [{ method: "open_table", args: [hex(key), int(0)] }]);
+  log("Table opened", sent.id);
+  for (let look = 0; look < 20 && table === null; look++) {
+    table = await findTable(key);
+    if (table === null) await wait(1000);
   }
+  if (table === null) throw new Error("The new table didn't appear");
+  $("crumb").textContent = `Table ${table}`;
+  return ticket;
 }
 
 const LINES: Record<number, string> = {
@@ -97,6 +127,47 @@ const LINES: Record<number, string> = {
   [PHASE.REVEAL]: "The dead seat turns its card face up",
 };
 
+/** Pays a staked seat what it's owed, into a fresh stealth output. */
+async function settle(first: TableState) {
+  if (!payoutSecret || !walletAddress || !mine) return;
+  let t = first;
+  while (t.winner === 2 && t.wolf === 255) {
+    // The wolf has to turn its card over before anyone can be paid. If it never does, the table
+    // can be closed about an hour later, and then the stake comes back.
+    say("Waiting for the wolf to turn its card over.");
+    const fresh = await readTable(t.id).catch(() => null);
+    if (fresh) t = fresh;
+    await wait(4000);
+  }
+  const won = (me === t.wolf) === (t.winner === 2);
+  const stakers = [0, 1, 2, 3, 4].filter((i) => t.staked & (1 << i));
+  const winners = stakers.filter((i) => (i === t.wolf) === (t.winner === 2));
+  const voided = t.winner === 3 || !winners.length;
+  if (!voided && !won) return;
+  const amount = voided ? ANTE : (ANTE * BigInt(stakers.length)) / BigInt(winners.length);
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const sent = await claim(t, mine, payoutSecret, voided ? "refund" : "collect", amount, walletAddress);
+      log(`${Number(amount) / 1e6} tTARI paid into a fresh stealth output`, sent.id);
+      return;
+    } catch (e) {
+      if (attempt === 3) throw e;
+      await wait(2500);
+    }
+  }
+}
+
+async function maybeStake() {
+  if (!($("stakeit") as HTMLInputElement).checked || !mine) return;
+  walletAddress = await connectWallet();
+  if (!walletAddress) return log("Sapient isn't ready, so this game has no stake.");
+  say("Approve the stake in Sapient.");
+  const t = await readTable(table!);
+  payoutSecret = await stake(t!, mine);
+  save();
+  log("You staked 1 tTARI from a stealth coin");
+}
+
 const local = () => [mine, ...ghosts].filter((s): s is Seat => s !== null);
 
 /** Plays until the table ends. Every tab does the same: read, act for its own seats, repeat. */
@@ -104,7 +175,13 @@ async function play() {
   let lastPhase = -1;
   let announced = "";
   for (;;) {
-    const t = await readTable(table!);
+    let t: TableState | null = null;
+    try {
+      t = await readTable(table!);
+    } catch {
+      await wait(2500);
+      continue;
+    }
     if (!t) throw new Error("The table is gone");
     if (mine && !myCard && t.phase >= PHASE.NIGHT) {
       myCard = cardOf(t, mine);
@@ -122,6 +199,7 @@ async function play() {
       }
       say(t.winner === 1 ? "The wolf is dead. The village wins." : t.winner === 2 ? "Only two remain. The wolf wins." : "The table stalled and closed.");
       if (t.wolf !== 255) log(`${name(t.wolf)} held the wolf.`);
+      await settle(t);
       return;
     }
     const key = `${t.phase}/${t.round}`;
@@ -178,7 +256,9 @@ async function solo() {
   mine = seats[0];
   ghosts = seats.slice(1);
   const sent = await joinSeats(table!, ticket, seats);
+  save();
   log("Five keys registered", sent.id);
+  await maybeStake();
   await play();
 }
 
@@ -187,21 +267,30 @@ async function hostGroup() {
   const ticket = await openTable();
   mine = seat(0);
   await joinSeats(table!, ticket, [mine]);
+  save();
+  await maybeStake();
   const link = `${location.origin}${location.pathname}#t=${table}&k=${ticket}`;
   history.replaceState(null, "", "#table");
   await navigator.clipboard?.writeText(link).catch(() => undefined);
   say("Table open. The invite link is copied. Send it to up to four friends.");
-  log("You sit down. The link holds the ticket, so share it only with players.");
+  log("The link holds the ticket, so share it only with players.");
+  log(link);
   for (;;) {
     const t = await readTable(table!);
     drawSeats(t ?? undefined);
     const free = [0, 1, 2, 3, 4].filter((i) => !(t!.joined & (1 << i)));
     if (!free.length) break;
-    const go = await Promise.race([ask(`${5 - free.length} of 5 seated. Press to fill the rest with ghosts.`, [-1]), wait(4000).then(() => -2)]);
+    const go = await Promise.race([ask(`${5 - free.length} of 5 seated. Ghosts run in this tab, so you could read their cards.`, [-1]), wait(4000).then(() => -2)]);
     if (go === -1) {
-      ghosts = free.map(seat);
-      await joinSeats(table!, ticket, ghosts);
-      break;
+      try {
+        const fill = free.map(seat);
+        await joinSeats(table!, ticket, fill);
+        ghosts = fill;
+        save();
+        break;
+      } catch {
+        log("Someone sat down at the same moment. Try again.");
+      }
     }
   }
   $("choices").replaceChildren();
@@ -211,23 +300,50 @@ async function hostGroup() {
 async function joinGroup(id: bigint, ticket: string) {
   table = id;
   $("crumb").textContent = `Table ${id}`;
-  for (let attempt = 0; attempt < 6; attempt++) {
+  let seated = false;
+  for (let attempt = 0; attempt < 6 && !seated; attempt++) {
     const t = await readTable(id);
     if (!t || t.phase !== PHASE.LOBBY) throw new Error("This table has already started.");
     const free = [0, 1, 2, 3, 4].find((i) => !(t.joined & (1 << i)));
     if (free === undefined) throw new Error("This table is full.");
-    me = free;
-    mine = seat(free);
+    const candidate = seat(free);
     try {
-      await joinSeats(id, ticket, [mine]);
-      say("You're seated. Waiting for the others.");
-      await play();
-      return;
+      await joinSeats(id, ticket, [candidate]);
+      me = free;
+      mine = candidate;
+      seated = true;
+      save();
     } catch {
       await wait(2000);
     }
   }
-  throw new Error("Couldn't get a seat.");
+  if (!seated) throw new Error("Couldn't get a seat.");
+  await maybeStake();
+  say("You're seated. Waiting for the others.");
+  await play();
+}
+
+/** Picks a table back up after a refresh, using what this browser kept. */
+async function resume(saved: Saved) {
+  table = BigInt(saved.table);
+  me = saved.me;
+  mine = saved.mine;
+  ghosts = saved.ghosts;
+  walletAddress = saved.wallet;
+  payoutSecret = saved.payout;
+  $("crumb").textContent = `Table ${table}`;
+  await play();
+}
+
+function clearTable() {
+  table = null;
+  me = 0;
+  mine = null;
+  ghosts = [];
+  myCard = 0;
+  payoutSecret = null;
+  $("log").replaceChildren();
+  $("choices").replaceChildren();
 }
 
 async function guarded(run: () => Promise<void>) {
@@ -237,21 +353,35 @@ async function guarded(run: () => Promise<void>) {
     await run();
   } catch (e) {
     console.error(e);
-    say("The testnet refused that. Refresh to try again.");
+    say("The testnet refused that. Refresh, and your seat comes back.");
     log(String(e).slice(0, 200));
   }
+  for (const id of ["play", "friends"]) ($(id) as HTMLButtonElement).disabled = false;
 }
 
 async function start() {
   await init();
   drawSeats();
-  $("play").addEventListener("click", () => guarded(solo));
-  $("friends").addEventListener("click", () => guarded(hostGroup));
+  $("stakebox").hidden = !window.tari;
+  $("play").addEventListener("click", () => {
+    clearTable();
+    return guarded(solo);
+  });
+  $("friends").addEventListener("click", () => {
+    clearTable();
+    return guarded(hostGroup);
+  });
   const invite = new URLSearchParams(location.hash.slice(1));
   if (invite.get("t") && invite.get("k")) {
     const [id, ticket] = [BigInt(invite.get("t")!), invite.get("k")!];
     history.replaceState(null, "", "#table");
     await guarded(() => joinGroup(id, ticket));
+  }
+  const saved = restore();
+  if (saved && !invite.get("t")) {
+    const old = await readTable(BigInt(saved.table)).catch(() => null);
+    const unpaid = old && saved.payout && (old.phase !== PHASE.OVER || !(old.collected & (1 << saved.me)));
+    if (old && (old.phase !== PHASE.OVER || unpaid)) await guarded(() => resume(saved));
   }
   fetch("/proof.json")
     .then((r) => (r.ok ? r.json() : []))
