@@ -6,7 +6,7 @@ import { ANTE, EXPLORER, SEATS } from "./net";
 import { claim, connectWallet, stake } from "./stake";
 
 const $ = (id: string) => document.getElementById(id)!;
-const NAMES = ["The Widow", "The Sexton", "The Miller", "The Bell", "The Digger"];
+const NAMES = ["The Widow", "The Sexton", "The Miller", "The Bellringer", "The Gravedigger"];
 
 let me = 0; // this player's seat
 let ghosts: Seat[] = []; // seats this tab plays for
@@ -61,7 +61,7 @@ function drawSeats(t?: TableState) {
       }
       const faceUp = i === me && myCard ? (myCard === CARD_WOLF ? "wolf" : "villager") : t && !isAlive(t, i) ? (t.wolf === i ? "wolf" : "villager") : "back";
       el.style.backgroundImage = `url(/art/card-${faceUp}.svg)`;
-      el.innerHTML = `<small>Seat ${i + 1}</small><span class="name">${name(i)}</span>`;
+      el.innerHTML = `<small>Seat ${i + 1}</small><span class="name">${name(i).replace("The ", "")}</span>`;
       return el;
     }),
   );
