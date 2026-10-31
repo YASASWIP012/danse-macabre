@@ -174,15 +174,9 @@ mod danse_macabre {
         }
 
         /// Open a table. `ticket` is a key held by whoever has the invite link, and it pays for
-        /// joining. `fee` is drawn from the pot, up to a cap, and tables per epoch are limited.
+        /// joining. `fee` is drawn from the pot, up to a cap.
         pub fn open_table(&mut self, ticket: Bytes, fee: u64) -> u64 {
             let now = Consensus::current_epoch();
-            if now != self.open_epoch {
-                self.open_epoch = now;
-                self.opens_this_epoch = 0;
-            }
-            assert!(self.opens_this_epoch < MAX_OPENS_PER_EPOCH, "Too many tables this epoch");
-            self.opens_this_epoch += 1;
             self.draw(fee);
 
             assert!(ticket.len() == 32, "Bad ticket");
@@ -240,8 +234,16 @@ mod danse_macabre {
             self.charge(table, amount);
         }
 
-        /// Fee stage, for opening a table: capped, and limited per epoch by `open_table`.
+        /// Fee stage, for opening a table. Capped per call, and limited per epoch here because the
+        /// fee stage commits even if the rest of the transaction fails.
         pub fn pay_open_fee(&mut self, amount: u64) {
+            let now = Consensus::current_epoch();
+            if now != self.open_epoch {
+                self.open_epoch = now;
+                self.opens_this_epoch = 0;
+            }
+            assert!(self.opens_this_epoch < MAX_OPENS_PER_EPOCH, "Too many tables this epoch");
+            self.opens_this_epoch += 1;
             self.draw(amount);
         }
 

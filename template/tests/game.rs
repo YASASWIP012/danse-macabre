@@ -19,6 +19,7 @@ struct World {
     key: RistrettoSecretKey,
     table: u64,
     seats: Vec<Seat>,
+    nonce: u32,
 }
 
 struct View {
@@ -57,7 +58,7 @@ fn world() -> World {
     let ticket = Native::mul_base(&random_scalar());
     let table: u64 = test.call_method(game, "open_table", args![b(ticket.to_vec()), 0u64], vec![]);
     let seats = (0..N as u32).map(|i| Seat::new(table, i)).collect();
-    World { test, game, key, table, seats }
+    World { test, game, key, table, seats, nonce: 0 }
 }
 
 impl World {
@@ -338,4 +339,124 @@ fn a_tied_day_kills_nobody() {
     let s = w.state();
     assert_eq!((s.phase, s.round, s.alive.count_ones()), (NIGHT, 2, 4));
     assert_eq!(DEAL + DAY, 8);
+}
+
+/// A throwaway key with no account plays a move, and only the fee pot pays.
+fn sealed_by_stranger(w: &mut World, seat: usize, method: &str, a: Vec<tari_template_test_tooling::transaction::builder::named_args::NamedArg>) -> Transaction {
+    let t = w.table;
+    let s = w.seats[seat].clone();
+    let nonce = w.nonce;
+    w.nonce += 1;
+    let proof = s.fee_proof(nonce);
+    let (stranger, _) = w.test.new_key_pair(200 + nonce as u8);
+    w.test
+        .transaction()
+        .with_fee_instructions_builder(|b| {
+            b.call_method(w.game, "pay_seat_fee", args![t, seat as u8, b_(proof), 3_000_000u64])
+        })
+        .call_method(w.game, method, a)
+        .finish()
+        .seal(&stranger)
+}
+
+/// Runs a transaction with fees on, the way the network will.
+fn priced(w: &mut World, tx: Transaction) -> tari_template_test_tooling::engine_types::commit_result::ExecuteResult {
+    w.test.enable_fees();
+    let result = w.test.execute_expect_success(tx, vec![]);
+    w.test.disable_fees();
+    result
+}
+
+fn b_(v: Vec<u8>) -> Bytes {
+    Bytes::from_vec(v)
+}
+
+#[test]
+fn a_stranger_key_plays_a_move_and_only_the_pot_pays() {
+    let mut w = world();
+    w.join_all();
+    let before: Amount = w.test.call_method(w.game, "pot_balance", args![], vec![]);
+    let joint = w.joint();
+    let deck = ciphers(&w.state().deck);
+    let s = w.seats[0].clone();
+    let t = w.table;
+    let steps = encode_steps(&s.shuffle(&deck, &joint));
+    let tx = sealed_by_stranger(&mut w, 0, "shuffle", args![t, 0u8, b(steps)]);
+    let result = priced(&mut w, tx);
+    let fee = result.finalize.fee_receipt.total_fees_paid();
+    println!("one shuffle: fee {fee}");
+    assert_eq!(w.state().turn, 1);
+    let after: Amount = w.test.call_method(w.game, "pot_balance", args![], vec![]);
+    assert!(after < before);
+}
+
+#[test]
+fn every_seat_in_one_transaction_stays_inside_the_budget() {
+    let mut w = world();
+    w.join_all();
+    let joint = w.joint();
+    let deck = ciphers(&w.state().deck);
+    let s = w.seats[0].clone();
+    let t = w.table;
+    let steps = encode_steps(&s.shuffle(&deck, &joint));
+    let tx = sealed_by_stranger(&mut w, 0, "shuffle", args![t, 0u8, b(steps)]);
+    priced(&mut w, tx);
+    for seat in 1..N {
+        let joint = w.joint();
+        let deck = ciphers(&w.state().deck);
+        let s = w.seats[seat].clone();
+        let steps = encode_steps(&s.shuffle(&deck, &joint));
+        let tx = sealed_by_stranger(&mut w, 0, "shuffle", args![t, seat as u8, b(steps)]);
+        priced(&mut w, tx);
+    }
+    let state = w.state();
+    assert_eq!(state.phase, DEAL);
+    let deck = ciphers(&state.deck);
+    let mut builder = w.test.transaction();
+    let proof = w.seats[0].fee_proof(w.nonce);
+    builder = builder.with_fee_instructions_builder(|f| f.call_method(w.game, "pay_seat_fee", args![t, 0u8, b_(proof), 3_000_000u64]));
+    for s in w.seats.clone() {
+        let bases: Vec<Pt> = (0..N).filter(|i| *i != s.index as usize).map(|i| deck[i].c1).collect();
+        let (shares, proof) = s.shares(b"deal", 0, &bases);
+        builder = builder.call_method(w.game, "deal", args![t, s.index as u8, b(shares.concat()), b(proof)]);
+    }
+    let (stranger, _) = w.test.new_key_pair(250);
+    let tx = builder.finish().seal(&stranger);
+    let result = priced(&mut w, tx);
+    println!("deal for five seats: fee {}", result.finalize.fee_receipt.total_fees_paid());
+    w.nonce += 1;
+    assert_eq!(w.state().phase, NIGHT);
+
+    let state = w.state();
+    let joint = w.joint();
+    let residual = ciphers(&state.residual);
+    let proof = w.seats[0].fee_proof(w.nonce);
+    let mut builder = w.test.transaction().with_fee_instructions_builder(|f| f.call_method(w.game, "pay_seat_fee", args![t, 0u8, b_(proof), 3_000_000u64]));
+    for s in w.seats.clone() {
+        let targets: Vec<usize> = (0..N).filter(|i| *i != s.index as usize).collect();
+        let (votes, proof) = s.night(1, &joint, &residual[s.index as usize], &targets, N, Some(targets[0]));
+        builder = builder.call_method(w.game, "night", args![t, s.index as u8, b(encode_ciphers(&votes)), b(proof)]);
+    }
+    let (stranger, _) = w.test.new_key_pair(251);
+    let tx = builder.finish().seal(&stranger);
+    let result = priced(&mut w, tx);
+    println!("night for five seats: fee {}", result.finalize.fee_receipt.total_fees_paid());
+    assert_eq!(w.state().phase, NIGHT_OPEN);
+}
+
+#[test]
+fn a_stale_fee_proof_is_refused() {
+    let mut w = world();
+    w.join_all();
+    let t = w.table;
+    let proof = w.seats[0].fee_proof(99);
+    let (stranger, _) = w.test.new_key_pair(252);
+    let tx = w
+        .test
+        .transaction()
+        .with_fee_instructions_builder(|f| f.call_method(w.game, "pay_seat_fee", args![t, 0u8, b_(proof), 3_000_000u64]))
+        .call_method(w.game, "pot_balance", args![])
+        .finish()
+        .seal(&stranger);
+    assert!(w.test.try_execute(tx, vec![]).map(|r| r.finalize.result.any_accept().is_none()).unwrap_or(true));
 }
