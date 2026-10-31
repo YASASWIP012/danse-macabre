@@ -65,6 +65,11 @@ pub fn ticket_proof(game: u64, secret: &str, nonce: u32) -> String {
     hex::encode(seat(game, 0, secret).ticket_proof(nonce))
 }
 
+#[wasm_bindgen]
+pub fn collect_proof(game: u64, index: u32, secret: &str, commitment: &str) -> String {
+    hex::encode(seat(game, index, secret).collect_proof(&hex::decode(commitment).expect("hex")))
+}
+
 /// Every switch output and proof, in network order.
 #[wasm_bindgen]
 pub fn shuffle(game: u64, index: u32, secret: &str, deck: &str, joint: &str) -> String {

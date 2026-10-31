@@ -112,6 +112,21 @@ export async function readTable(id: bigint): Promise<TableState | null> {
   };
 }
 
+/** Sends with retries, for the moments two players touch the table at once. */
+export async function sendRetrying(build: () => Promise<{ fee: Fee; calls: Call[] }>, tries = 4): Promise<Sent> {
+  let failure: unknown;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    try {
+      const { fee, calls } = await build();
+      return await send(fee, calls);
+    } catch (e) {
+      failure = e;
+      await new Promise((r) => setTimeout(r, 1500 + attempt * 1500));
+    }
+  }
+  throw failure;
+}
+
 export async function nextTableId(): Promise<bigint> {
   const r = await fetch(`${INDEXER}/substates/${COMPONENT}`, { cache: "no-store" });
   const j = await r.json();

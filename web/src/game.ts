@@ -1,6 +1,6 @@
 // One player's view of a table: works out what the seats held in this tab owe, proves it and sends
 // it as one transaction. In solo play this tab holds all five seats, and four of them are ghosts.
-import { hex, int, send, type Call, type TableState } from "./chain";
+import { hex, int, readTable, send, type Call, type TableState } from "./chain";
 import * as w from "./wasm/danse_client";
 import { SEATS } from "./net";
 
@@ -111,4 +111,15 @@ export async function act(t: TableState, seats: Seat[], choices: Choices = {}) {
   const payer = seats[0];
   const proof = w.fee_proof(t.id, payer.index, payer.secret, t.feeNonce);
   return send({ kind: "seat", table: t.id, seat: payer.index, proof }, list);
+}
+
+/** Takes the lowest free seats, paid for by the invite ticket. */
+export async function joinSeats(table: bigint, ticket: string, seats: Seat[]) {
+  const t = await readTable(table);
+  if (!t) throw new Error("No such table");
+  const calls: Call[] = seats.map((s) => ({
+    method: "join",
+    args: [int(table), int(s.index), hex(w.public_key(s.secret)), hex(w.join_proof(table, s.index, s.secret))],
+  }));
+  return send({ kind: "ticket", table, proof: w.ticket_proof(table, ticket, t.feeNonce) }, calls);
 }

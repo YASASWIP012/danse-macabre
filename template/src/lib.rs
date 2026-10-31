@@ -32,6 +32,8 @@ pub const MAX_GAME_FEES: u64 = 200_000_000;
 pub const MAX_OPENS_PER_EPOCH: u32 = 12;
 /// Epochs a table may stall before anyone can close it. An epoch is about 48 minutes.
 pub const STALL_EPOCHS: u64 = 2;
+/// The most one seat may stake, in µT.
+pub const MAX_ANTE: u64 = 100_000_000;
 /// Finished tables kept in state.
 pub const KEEP_FINISHED: u64 = 8;
 
@@ -150,6 +152,8 @@ mod danse_macabre {
         tables: BTreeMap<u64, Table>,
         next_table: u64,
         pot: Vault,
+        /// Stakes wait here until the game ends.
+        stakes: Vault,
         open_epoch: u64,
         opens_this_epoch: u32,
     }
@@ -161,6 +165,7 @@ mod danse_macabre {
                 tables: BTreeMap::new(),
                 next_table: 1,
                 pot: Vault::from_bucket(pot),
+                stakes: Vault::new_empty(TARI_TOKEN),
                 open_epoch: 0,
                 opens_this_epoch: 0,
             })
@@ -205,6 +210,8 @@ mod danse_macabre {
                 opening: Bytes::from_vec(Vec::new()),
                 revealed: Bytes::from_vec(vec![0u8; SEATS * 32]),
                 ticket,
+                antes: vec![0; SEATS],
+                collected: 0,
                 fee_nonce: 0,
                 fees_used: 0,
                 stall_at: now + STALL_EPOCHS,
@@ -454,6 +461,53 @@ mod danse_macabre {
             touch(t);
         }
 
+        /// Stake on this seat before the first night. Pay it from a stealth coin, so the stake
+        /// names no wallet.
+        pub fn ante(&mut self, table: u64, seat: u8, stake: Bucket) {
+            let amount = u64::try_from(stake.amount().to_u128()).expect("Stake too large");
+            let t = self.table(table);
+            assert!(t.phase < NIGHT, "The first night has begun");
+            assert!((seat as usize) < SEATS && t.joined & (1 << seat) != 0, "Empty seat");
+            assert!(t.antes[seat as usize] == 0, "Already staked");
+            assert!(amount > 0 && amount <= MAX_ANTE, "Bad stake");
+            t.antes[seat as usize] = amount;
+            self.stakes.deposit(stake);
+            emit_event("Danse.Staked", metadata! { "table" => table.to_string(), "seat" => seat.to_string() });
+        }
+
+        /// A winner takes their share into one fresh stealth output. The proof binds that output's
+        /// commitment, so copying this call can't redirect the money.
+        pub fn collect(&mut self, table: u64, seat: u8, statement: StealthTransferStatement, proof: Bytes) {
+            let t = self.table(table);
+            assert!(t.phase == OVER && (seat as usize) < SEATS, "The game isn't over");
+            assert!(t.winner == WINNER_VILLAGE || t.winner == WINNER_WOLF, "Nobody won");
+            assert!(t.collected & (1 << seat) == 0, "Already collected");
+            assert!(t.antes[seat as usize] > 0, "No stake on this seat");
+            let wolf_won = t.winner == WINNER_WOLF;
+            let won = |i: usize| (i as u8 == t.wolf) == wolf_won;
+            assert!(won(seat as usize), "This seat lost");
+
+            let total: u64 = t.antes.iter().sum();
+            let winners = (0..SEATS).filter(|i| won(*i) && t.antes[*i] > 0).count() as u64;
+            let share = total / winners;
+            assert!(statement.inputs_statement.inputs.is_empty(), "A payout spends only the stakes");
+            assert!(statement.inputs_statement.revealed_amount == Amount::from(share), "Wrong amount");
+            assert!(statement.outputs_statement.revealed_output.is_none(), "A payout stays hidden");
+            assert!(statement.outputs_statement.outputs.len() == 1, "One output");
+
+            let commitment = *statement.outputs_statement.outputs[0].commitment();
+            let key = point_at(&t.keys, seat as usize);
+            let ctx = st::ctx(b"collect", table, 0, seat as u32, commitment.as_ref());
+            assert!(verify::<Engine>(&ctx, &st::key_statement(&key), &proof), "Bad collect proof");
+            t.collected |= 1 << seat;
+
+            let rest = self.stakes.withdraw(Amount::from(share)).stealth_transfer(statement);
+            rest.assert_contains_no_confidential_funds();
+            assert!(rest.amount().is_zero(), "Funds left over");
+            self.stakes.deposit(rest);
+            emit_event("Danse.Collected", metadata! { "table" => table.to_string() });
+        }
+
         /// Anyone may close a table that has stalled for two epochs.
         pub fn close_stalled(&mut self, table: u64) {
             let t = self.table(table);
@@ -534,6 +588,9 @@ mod danse_macabre {
         /// Secrets of the dead, published on reveal. Zero until then.
         pub revealed: Bytes,
         pub ticket: Bytes,
+        /// Stake per seat, in µT.
+        pub antes: Vec<u64>,
+        pub collected: u32,
         pub fee_nonce: u32,
         pub fees_used: u64,
         pub stall_at: u64,

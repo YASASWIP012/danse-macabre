@@ -16,6 +16,7 @@ const N: usize = 5;
 struct World {
     test: TemplateTest,
     game: ComponentAddress,
+    account: ComponentAddress,
     key: RistrettoSecretKey,
     table: u64,
     seats: Vec<Seat>,
@@ -58,7 +59,7 @@ fn world() -> World {
     let ticket = Native::mul_base(&random_scalar());
     let table: u64 = test.call_method(game, "open_table", args![b(ticket.to_vec()), 0u64], vec![]);
     let seats = (0..N as u32).map(|i| Seat::new(table, i)).collect();
-    World { test, game, key, table, seats, nonce: 0 }
+    World { test, game, account, key, table, seats, nonce: 0 }
 }
 
 impl World {
@@ -459,4 +460,103 @@ fn a_stale_fee_proof_is_refused() {
         .finish()
         .seal(&stranger);
     assert!(w.test.try_execute(tx, vec![]).map(|r| r.finalize.result.any_accept().is_none()).unwrap_or(true));
+}
+
+fn stake(w: &mut World, seat: usize, amount: u64) {
+    let t = w.table;
+    let tx = w
+        .test
+        .transaction()
+        .call_method(w.account, "withdraw", args![tari_template_lib::prelude::TARI_TOKEN, Amount::from(amount)])
+        .put_last_instruction_output_on_workspace("stake")
+        .call_method(w.game, "ante", args![t, seat as u8, Workspace("stake")])
+        .finish()
+        .seal(&w.key);
+    w.test.execute_expect_success(tx, vec![]);
+}
+
+fn finish_with_village_win(w: &mut World, wolf: usize) {
+    w.night((wolf + 1) % N);
+    w.open();
+    w.reveal();
+    w.vote(wolf);
+    w.open();
+    w.reveal();
+    assert_eq!(w.state().winner, WINNER_VILLAGE);
+}
+
+fn payout(amount: u64) -> tari_template_test_tooling::support::stealth::StealthSecretTransferData {
+    tari_template_test_tooling::support::stealth::generate_mint_statement([amount], 0u64, None)
+}
+
+#[test]
+fn stakes_close_at_nightfall() {
+    let mut w = world();
+    w.join_all();
+    w.shuffle_all();
+    w.deal_all();
+    let wolf = w.wolf();
+    let winner = (wolf + 1) % N;
+    // Stakes close at nightfall, so this table is too late.
+    let t = w.table;
+    let tx = w.test.transaction()
+        .call_method(w.account, "withdraw", args![tari_template_lib::prelude::TARI_TOKEN, Amount::from(1000u64)])
+        .put_last_instruction_output_on_workspace("stake")
+        .call_method(w.game, "ante", args![t, winner as u8, Workspace("stake")])
+        .finish().seal(&w.key);
+    let why = format!("{:?}", w.test.execute_expect_failure(tx, vec![]));
+    assert!(why.contains("The first night has begun"), "{why}");
+}
+
+#[test]
+fn stakes_pay_the_winners_and_only_once() {
+    let mut w = world();
+    w.join_all();
+    stake(&mut w, 0, 1_000);
+    stake(&mut w, 1, 1_000);
+    w.shuffle_all();
+    w.deal_all();
+    let wolf = w.wolf();
+    finish_with_village_win(&mut w, wolf);
+    let t = w.table;
+    let winners: Vec<usize> = [0usize, 1].into_iter().filter(|s| *s != wolf).collect();
+    let share = 2_000 / winners.len() as u64;
+    let seat = winners[0];
+    let data = payout(share);
+    let commitment = *data.statement.outputs_statement.outputs[0].commitment();
+    let proof = w.seats[seat].collect_proof(commitment.as_ref());
+
+    // A proof for one output can't be used to pay a different one.
+    let other = payout(share);
+    w.refused("collect", args![t, seat as u8, other.statement.clone(), b(proof.clone())], "Bad collect proof");
+    let wrong = payout(share - 1);
+    let wrong_commitment = *wrong.statement.outputs_statement.outputs[0].commitment();
+    let wrong_proof = w.seats[seat].collect_proof(wrong_commitment.as_ref());
+    w.refused("collect", args![t, seat as u8, wrong.statement.clone(), b(wrong_proof)], "Wrong amount");
+
+    w.ok("collect", args![t, seat as u8, data.statement.clone(), b(proof.clone())]);
+    let again = payout(share);
+    let again_commitment = *again.statement.outputs_statement.outputs[0].commitment();
+    let again_proof = w.seats[seat].collect_proof(again_commitment.as_ref());
+    w.refused("collect", args![t, seat as u8, again.statement.clone(), b(again_proof)], "Already collected");
+}
+
+#[test]
+fn a_seat_that_lost_collects_nothing() {
+    let mut w = world();
+    w.join_all();
+    stake(&mut w, 0, 1_000);
+    stake(&mut w, 1, 1_000);
+    stake(&mut w, 2, 1_000);
+    stake(&mut w, 3, 1_000);
+    stake(&mut w, 4, 1_000);
+    w.shuffle_all();
+    w.deal_all();
+    let wolf = w.wolf();
+    finish_with_village_win(&mut w, wolf);
+    let t = w.table;
+    let data = payout(1_250);
+    let commitment = *data.statement.outputs_statement.outputs[0].commitment();
+    let proof = w.seats[wolf].collect_proof(commitment.as_ref());
+    w.refused("collect", args![t, wolf as u8, data.statement.clone(), b(proof)], "This seat lost");
 }

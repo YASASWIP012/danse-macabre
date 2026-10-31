@@ -80,6 +80,12 @@ impl Seat {
         prove::<Native>(&ctx, &st::key_statement(&self.key), 0, &[self.secret], &mut rng())
     }
 
+    /// Claims a stake into the stealth output with this commitment.
+    pub fn collect_proof(&self, commitment: &[u8]) -> Vec<u8> {
+        let ctx = st::ctx(b"collect", self.game, 0, self.index, commitment);
+        prove::<Native>(&ctx, &st::key_statement(&self.key), 0, &[self.secret], &mut rng())
+    }
+
     pub fn shuffle(&self, deck: &[Cipher], joint: &Pt) -> Vec<ShuffleStep> {
         let n = deck.len();
         let mut destinations: Vec<usize> = (0..n).collect();
