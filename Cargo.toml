@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["crates/shroud", "crates/client"]
+exclude = ["template"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

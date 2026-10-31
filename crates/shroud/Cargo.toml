@@ -1,0 +1,18 @@
+[package]
+name = "shroud"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Hidden-state games on Tari Ootle: verifiable shuffles, sealed actions and shared decryption, checked inside a template."
+
+[features]
+default = []
+native = ["dep:curve25519-dalek", "dep:sha2"]
+
+[dependencies]
+curve25519-dalek = { version = "4", optional = true, default-features = false, features = ["alloc"] }
+sha2 = { version = "0.10", optional = true, default-features = false }
+
+[dev-dependencies]
+shroud = { path = ".", features = ["native"] }
+rand = "0.8"
