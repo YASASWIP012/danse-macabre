@@ -1,5 +1,7 @@
 # Danse Macabre
 
+**Play it: https://danse-macabre.vercel.app** (no wallet, about two minutes). A real game on the testnet is written up in [PROOF.md](PROOF.md).
+
 Werewolf with no game master, on Tari Ootle. Five players shuffle one wolf into the deck together, so nobody knows the deal, including whoever opened the table. Each night every living seat posts one sealed action. The wolf's names a victim and the others are proved empty. Only the sum is decrypted, so the village learns who died and never who did it.
 
 ## Why this needs Tari
@@ -13,7 +15,8 @@ The cryptography would run on any chain with fast curve operations. The rest of 
 | `crates/shroud` | A reusable library for hidden-state games: one proof system for shuffles, shared decryption and sealed actions. The same code verifies in the template and in the browser. |
 | `template` | The Ootle template that runs the game. It holds no secret and trusts no seat. |
 | `crates/client` | The player's prover, compiled to WebAssembly. |
-| `web` | The site. |
+| `web` | The site. Solo play with four ghosts, or group play by invite link where each player's tab holds their own keys. |
+| `tools/deploy` | How the game got onto Esmeralda: claim a burn, publish, fund the fee pot. |
 | `THREAT_MODEL.md` | What's hidden, what isn't, and which test plays each attack. |
 
 ## Run the tests

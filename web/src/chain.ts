@@ -140,6 +140,14 @@ export async function readTable(id: bigint): Promise<TableState | null> {
   };
 }
 
+/** How many tables have been opened so far. */
+export async function tablesOpened(): Promise<number> {
+  const r = await fetch(`${INDEXER}/substates/${COMPONENT}`, { cache: "no-store" });
+  const j = await r.json();
+  const state = (j?.substate ?? j?.state?.up?.substate)?.Component?.body?.state;
+  return Number(state[1]) - 1;
+}
+
 /** Finds the table opened with this ticket, which is how a tab learns its own table's id. */
 export async function findTable(ticketKey: string): Promise<bigint | null> {
   const r = await fetch(`${INDEXER}/substates/${COMPONENT}`, { cache: "no-store" });

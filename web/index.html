@@ -22,25 +22,26 @@
 
 <main id="top">
   <section class="hero">
-    <p class="eyebrow">Werewolf on Tari Ootle</p>
+    <p class="eyebrow">Werewolf where the game keeps the secret</p>
     <h1>Someone at this table is the wolf.<br /><em>The table doesn't know who.</em></h1>
-    <p class="lede">Five players shuffle one wolf into the deck together, so nobody knows the deal, including whoever opened the game. There is no game master and no server. The contract checks every move without ever seeing a card.</p>
+    <p class="lede">Nobody deals. Nobody narrates. Five players shuffle one wolf into the deck together, and even the host can't see who drew it. Each night someone dies, and nobody can trace who did it.</p>
     <div class="cta">
-      <button class="pill" id="play">Take a seat</button>
+      <button class="pill" id="play">Play now, 2 minutes</button>
       <button class="pill ghost" id="friends">Play with friends</button>
     </div>
     <label class="stakebox" id="stakebox" hidden><input type="checkbox" id="stakeit" /> Stake 1 tTARI privately from Sapient</label>
-    <p class="fine">No wallet needed. Esmeralda testnet. Ghosts fill any empty seats.</p>
+    <p class="fine">No wallet needed. Every move is real, on the Tari testnet. <span id="count"></span></p>
   </section>
 
   <section class="stage" id="table">
     <div class="window">
       <div class="chrome"><i></i><i></i><i></i><span id="crumb">Table not open yet</span></div>
-      <div class="room">
+      <div class="room" id="room">
         <div class="seats" id="seats"></div>
         <div class="centre">
-          <p class="status" id="status">Press Take a seat to open a table on the testnet.</p>
+          <p class="status" id="status">Press Play now to open a table.</p>
           <div class="choices" id="choices"></div>
+          <div class="result" id="result" hidden></div>
         </div>
         <aside class="ledger">
           <h3>On the chain</h3>

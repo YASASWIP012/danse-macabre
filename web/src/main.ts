@@ -1,6 +1,6 @@
 import "./style.css";
 import init, * as w from "./wasm/danse_client";
-import { findTable, hex, int, readTable, send, type TableState } from "./chain";
+import { findTable, hex, int, readTable, send, tablesOpened, type TableState } from "./chain";
 import { CARD_WOLF, PHASE, act, cardOf, isAlive, joinSeats, living, unmask, type Choices, type Seat } from "./game";
 import { ANTE, EXPLORER, SEATS } from "./net";
 import { claim, connectWallet, stake } from "./stake";
@@ -34,12 +34,27 @@ function log(text: string, tx?: string) {
   $("log").prepend(li);
 }
 
+let shownCard = 0;
+let shownDead = 31;
+
+function setTime(t?: TableState) {
+  const night = t && (t.phase === PHASE.NIGHT || t.phase === PHASE.SHUFFLE || t.phase === PHASE.DEAL);
+  const dawn = t && (t.phase === PHASE.NIGHT_OPEN || t.phase === PHASE.REVEAL);
+  ($("room") as HTMLElement).dataset.time = night ? "night" : dawn ? "dawn" : "day";
+}
+
 function drawSeats(t?: TableState) {
+  setTime(t);
+  const flipMine = myCard !== 0 && shownCard === 0;
+  if (flipMine) shownCard = myCard;
+  const justDied = t ? shownDead & ~t.alive : 0;
+  if (t) shownDead = t.alive;
   $("seats").replaceChildren(
     ...[...Array(SEATS).keys()].map((i) => {
       const el = document.createElement("div");
       el.className = "seat";
       el.classList.toggle("you", i === me);
+      if ((flipMine && i === me) || justDied & (1 << i)) el.classList.add("flip");
       if (t) {
         el.classList.toggle("dead", !isAlive(t, i));
         el.classList.toggle("acted", (t.acted & (1 << i)) !== 0);
@@ -168,6 +183,33 @@ async function maybeStake() {
   log("You staked 1 tTARI from a stealth coin");
 }
 
+/** The end of the game: who it was, and a link anyone can check or share. */
+function showResult(t: TableState) {
+  const wolf = t.wolf === 255 ? "Nobody" : name(t.wolf);
+  const youWere = myCard === CARD_WOLF ? "You were the wolf." : "You were a villager.";
+  const verb = wolf === "You" ? "were" : "was";
+  const moves = $("log").querySelectorAll("a").length;
+  const line = `${wolf} ${verb} the wolf. ${youWere} ${moves} moves on the Tari testnet, and nobody could see who did it until the end.`;
+  const box = $("result");
+  box.hidden = false;
+  box.replaceChildren();
+  const title = document.createElement("strong");
+  title.textContent = t.winner === 1 ? "The village survived" : t.winner === 2 ? "The wolf took the village" : "The table went quiet";
+  const text = document.createElement("p");
+  text.textContent = line;
+  const row = document.createElement("div");
+  const share = document.createElement("a");
+  share.href = `https://bsky.app/intent/compose?text=${encodeURIComponent(`${line} ${location.origin}`)}`;
+  share.target = "_blank";
+  share.rel = "noreferrer";
+  share.textContent = "Share on Bluesky";
+  const copy = document.createElement("button");
+  copy.textContent = "Copy result";
+  copy.onclick = () => navigator.clipboard?.writeText(`${line} ${location.origin}`);
+  row.append(share, copy);
+  box.append(title, text, row);
+}
+
 const local = () => [mine, ...ghosts].filter((s): s is Seat => s !== null);
 
 /** Plays until the table ends. Every tab does the same: read, act for its own seats, repeat. */
@@ -200,6 +242,7 @@ async function play() {
       }
       say(t.winner === 1 ? "The wolf is dead. The village wins." : t.winner === 2 ? "Only two remain. The wolf wins." : "The table stalled and closed.");
       if (t.wolf !== 255) log(`${name(t.wolf)} held the wolf.`);
+      showResult(t);
       await settle(t);
       return;
     }
@@ -344,7 +387,10 @@ function clearTable() {
   mine = null;
   ghosts = [];
   myCard = 0;
+  shownCard = 0;
+  shownDead = 31;
   payoutSecret = null;
+  $("result").hidden = true;
   $("log").replaceChildren();
   $("choices").replaceChildren();
 }
@@ -365,7 +411,10 @@ async function guarded(run: () => Promise<void>) {
 async function start() {
   await init();
   drawSeats();
-  $("stakebox").hidden = !window.tari;
+  tablesOpened()
+    .then((n) => ($("count").textContent = `${n} tables opened so far.`))
+    .catch(() => undefined);
+  $("stakebox").hidden = !new URLSearchParams(location.search).has("stake");
   $("play").addEventListener("click", () => {
     clearTable();
     return guarded(solo);
