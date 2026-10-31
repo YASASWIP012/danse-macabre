@@ -83,8 +83,7 @@ export async function claim(t: TableState, seat: Seat, payout: string, action: "
     (b) => {
       b.saveVar("won");
       return b
-        .addInstruction(stealthTransferInstruction({ resourceAddress: TARI_RESOURCE_ADDRESS, revealedInputBucket: "won", statement }, (name) => b.resolveWorkspaceOffsetId(name)))
-        .addInput({ substate_id: TARI_RESOURCE_ADDRESS, version: null, is_write: false });
+        .addInstruction(stealthTransferInstruction({ resourceAddress: TARI_RESOURCE_ADDRESS, revealedInputBucket: "won", statement }, (name) => b.resolveWorkspaceOffsetId(name)));
     },
   );
 }

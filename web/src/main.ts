@@ -174,6 +174,7 @@ const local = () => [mine, ...ghosts].filter((s): s is Seat => s !== null);
 async function play() {
   let lastPhase = -1;
   let announced = "";
+  let failures = 0;
   for (;;) {
     let t: TableState | null = null;
     try {
@@ -242,8 +243,10 @@ async function play() {
     let sent = null;
     try {
       sent = live.length ? await act(t, live, choices) : null;
+      failures = 0;
     } catch (e) {
       console.warn("retrying", e);
+      if (++failures === 5) throw e;
     }
     if (sent) log(LINES[t.phase] ?? "Move", sent.id);
     else await wait(2500);

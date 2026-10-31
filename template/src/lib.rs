@@ -26,8 +26,9 @@ use tari_template_lib::{prelude::*, types::bytes::Bytes};
 pub const SEATS: usize = 5;
 /// The most one transaction may draw from the fee pot, in µT.
 pub const MAX_TX_FEE: u64 = 3_000_000;
-/// The most one game may draw from the fee pot, in µT.
-pub const MAX_GAME_FEES: u64 = 30_000_000;
+/// The most one game may ask the fee pot for, in µT. Unused fees go back to the pot, but this counts
+/// what was asked for, so it has to cover the longest game at the per-transaction cap.
+pub const MAX_GAME_FEES: u64 = 90_000_000;
 /// Tables that may open per epoch, which bounds what strangers can draw from the pot.
 pub const MAX_OPENS_PER_EPOCH: u32 = 40;
 /// A table may be closed this many epoch boundaries after its last move. An epoch is about 48

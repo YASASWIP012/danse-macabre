@@ -1,0 +1,22 @@
+[
+ {
+  "text": "The template on the explorer",
+  "href": "https://explorer.tari.mw/template/63523893016c13646e1f44a3595dbdc0b9a8fd98a0f7e26549860029be94a5a5"
+ },
+ {
+  "text": "The game component and its public state",
+  "href": "https://explorer.tari.mw/substate/component_3ce57c95a3a7644274d539ad76ff5d270e3b852ba537db7fc8c2a07f7d2fe976"
+ },
+ {
+  "text": "A full game, 14 transactions, with what each one did",
+  "href": "https://github.com/YASASWIP012/danse-macabre/blob/main/PROOF.md"
+ },
+ {
+  "text": "Threat model: what is hidden, what is not, which test plays each attack",
+  "href": "https://github.com/YASASWIP012/danse-macabre/blob/main/THREAT_MODEL.md"
+ },
+ {
+  "text": "Source code, MIT licensed",
+  "href": "https://github.com/YASASWIP012/danse-macabre"
+ }
+]

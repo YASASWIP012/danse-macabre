@@ -1,7 +1,7 @@
 // Talks to Esmeralda. Every transaction is sealed by a throwaway key and paid for by the fee pot.
-import { Network, TransactionBuilder, bytesLiteral, fromHexStr, generateSealKeypair, intLiteral, resolveMaxEpoch, resolveTransaction, sealTransaction, signTransaction, toHexStr, type InstructionArg } from "@tari-project/ootle";
+import { Network, TARI_RESOURCE_ADDRESS, TransactionBuilder, bytesLiteral, fromHexStr, generateSealKeypair, intLiteral, resolveMaxEpoch, resolveTransaction, sealTransaction, signTransaction, toHexStr, type InstructionArg } from "@tari-project/ootle";
 import { IndexerProvider } from "@tari-project/ootle-indexer";
-import { COMPONENT, INDEXER, MAX_FEE } from "./net";
+import { COMPONENT, INDEXER, MAX_FEE, POT_VAULT, STAKES_VAULT } from "./net";
 
 /** How the pot is asked to pay. Each proof is bound to the transaction's seal key. */
 export type Fee =
@@ -50,6 +50,12 @@ export async function send(fee: Fee, calls: Call[] | ((sealer: string) => Call[]
   let b = new TransactionBuilder(Network.Esmeralda, await resolveMaxEpoch(p)).withFeeInstructionsBuilder((f) =>
     f.callMethod({ componentAddress: COMPONENT as never, methodName: pay.method }, pay.args),
   );
+  b = b.withInputs([
+    { substate_id: COMPONENT, version: null },
+    { substate_id: POT_VAULT, version: null },
+    { substate_id: STAKES_VAULT, version: null },
+    { substate_id: TARI_RESOURCE_ADDRESS, version: null, is_write: false },
+  ] as never);
   for (const call of typeof calls === "function" ? calls(sealer) : calls) {
     b = b.callMethod({ componentAddress: COMPONENT as never, methodName: call.method }, call.args);
   }
@@ -92,9 +98,12 @@ const hexOf = (v: any): string => {
   if (typeof v === "string") return v.replace(/^0x/, "");
   if (v instanceof Uint8Array) return toHexStr(v);
   if (Array.isArray(v)) return toHexStr(Uint8Array.from(v));
-  if (v && typeof v === "object" && "@bytes" in v) return String(v["@bytes"]);
+  if (v && typeof v === "object" && "hex" in v) return String(v.hex);
   return "";
 };
+
+/** The indexer writes a CBOR map as `{ "@cbor": "map", entries: [[key, value], ...] }`. */
+const entriesOf = (v: any): any[][] => v?.entries ?? (Array.isArray(v) ? v : Object.entries(v ?? {}));
 
 /** Reads a table straight from the component's public state. */
 export async function readTable(id: bigint): Promise<TableState | null> {
@@ -104,7 +113,7 @@ export async function readTable(id: bigint): Promise<TableState | null> {
   const sub = j?.substate ?? j?.state?.up?.substate;
   const state = sub?.Component?.body?.state;
   const tables = Array.isArray(state) ? state[0] : state?.tables;
-  const entry = (Array.isArray(tables) ? tables : Object.entries(tables ?? {})).find((e: any) => BigInt(e[0]) === id);
+  const entry = entriesOf(tables).find((e) => BigInt(e[0]) === id);
   if (!entry) return null;
   const t = entry[1];
   const f = (name: string, index: number) => (Array.isArray(t) ? t[index] : t[name]);
@@ -137,9 +146,8 @@ export async function findTable(ticketKey: string): Promise<bigint | null> {
   const j = await r.json();
   const state = (j?.substate ?? j?.state?.up?.substate)?.Component?.body?.state;
   const tables = Array.isArray(state) ? state[0] : state?.tables;
-  for (const entry of Array.isArray(tables) ? tables : Object.entries(tables ?? {})) {
-    const t = (entry as any[])[1];
-    if (hexOf(Array.isArray(t) ? t[18] : t.ticket) === ticketKey) return BigInt((entry as any[])[0]);
+  for (const [id, t] of entriesOf(tables)) {
+    if (hexOf(Array.isArray(t) ? t[18] : t.ticket) === ticketKey) return BigInt(id);
   }
   return null;
 }
