@@ -89,3 +89,4 @@ h3{font-size:16px;font-weight:600;margin:0 0 6px}
 @media(max-width:860px){.room{grid-template-columns:1fr;grid-template-areas:"seats" "centre" "ledger"}.ledger{border-left:0;border-top:1px solid var(--line)}.grid{grid-template-columns:1fr 1fr}.nav nav a:not(:last-child){display:none}}
 @media(max-width:520px){.grid{grid-template-columns:1fr}.seats{grid-template-columns:repeat(3,1fr)}.views{font-size:13px}.views th,.views td{padding:10px 6px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;scroll-behavior:auto!important}}
+.stakebox[hidden]{display:none}
